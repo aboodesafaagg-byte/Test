@@ -1,83 +1,78 @@
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
-const iconv = require('iconv-lite');
 
-// الرابط المستهدف
 const targetUrl = 'https://www.69shuba.com/txt/87906/39867326';
 
-async function scrapeChapter() {
+async function scrapeWithBrowser() {
+    let browser;
     try {
-        console.log(`جاري جلب الفصل من: ${targetUrl}...`);
+        console.log(`[LOG] جاري تشغيل متصفح حقيقي لجلب البيانات...`);
 
-        const response = await axios.get(targetUrl, {
-            responseType: 'arraybuffer',
-            timeout: 10000, // مهلة 10 ثواني
-            headers: {
-                // تحديث الـ Headers لمحاكاة متصفح حقيقي بشكل أفضل
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Referer': 'https://www.69shuba.com/',
-                'Connection': 'keep-alive',
-                'Cache-Control': 'max-age=0'
-            }
+        // تشغيل المتصفح مع إعدادات لتجاوز بيئة Docker في Railway
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled' // إخفاء حقيقة أنه بوت
+            ]
         });
 
-        const html = iconv.decode(response.data, 'gbk');
+        const page = await browser.newPage();
+
+        // إعداد User-Agent بشري
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // الذهاب للرابط والانتظار حتى يستقر الشبكة
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+        // الحصول على محتوى الصفحة بعد تشغيل السكريبتات
+        const html = await page.content();
         const $ = cheerio.load(html);
 
-        // استخراج العنوان
-        const title = $('h1').text().trim() || 'لم يتم العثور على عنوان';
+        // التحقق من النجاح
+        const title = $('h1').last().text().trim();
+        if (!title || html.includes('403 Forbidden')) {
+            throw new Error('الموقع لا يزال يحجب الوصول حتى مع المتصفح الحقيقي.');
+        }
 
         // تنظيف المحتوى
-        $('.txtnav .contentadv').remove();
-        $('.txtnav script').remove();
-        $('.txtnav h1').remove();
-        $('.txtnav .txtinfo').remove();
-
+        $('.txtnav script, .txtnav .contentadv, .txtnav .txtinfo, .txtnav h1').remove();
         let content = $('.txtnav').text();
-        content = content.replace(/\(本章完\)/g, '')
-                        .replace(/\n\s*\n/g, '\n\n')
-                        .trim();
+        content = content.replace(/\(本章完\)/g, '').replace(/\n\s*\n/g, '\n\n').trim();
 
-        const nextChapterUrl = $('.page1 a').last().attr('href');
+        const nextUrl = $('.page1 a').last().attr('href');
 
-        const result = {
-            success: true,
+        console.log(`[SUCCESS] تم السحب بواسطة المتصفح بنجاح! العنوان: ${title}`);
+        
+        return {
+            status: 'success',
             title,
-            nextChapterUrl,
-            contentSnippet: content.substring(0, 300) + '...'
+            content: content.substring(0, 500) + "...", // نرسل جزءاً فقط للتجربة
+            nextUrl
         };
-
-        console.log('✅ تم السحب بنجاح!');
-        return result;
 
     } catch (error) {
-        console.error('❌ حدث خطأ أثناء السحب:', error.message);
-        return {
-            success: false,
-            error: error.message,
-            tip: 'قد يكون الموقع قد حظر عنوان IP الخادم، جرب التشغيل محلياً أو استخدام Proxy.'
-        };
+        console.error(`[ERROR] فشل المتصفح: ${error.message}`);
+        return { status: 'error', message: error.message };
+    } finally {
+        if (browser) await browser.close();
     }
 }
 
-// إعداد السيرفر
+// السيرفر
 const http = require('http');
 const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    
     if (req.url === '/test') {
-        const data = await scrapeChapter();
-        res.writeHead(200);
+        const data = await scrapeWithBrowser();
         res.end(JSON.stringify(data, null, 2));
     } else {
-        res.writeHead(200);
-        res.end(JSON.stringify({ message: 'خادم السحب يعمل. اذهب إلى /test' }));
+        res.end(JSON.stringify({ message: 'Headless Browser Scraper is ready. Go to /test' }));
     }
 });
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
