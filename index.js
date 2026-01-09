@@ -1,83 +1,84 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const http = require('http');
 
-// الرابط المستهدف لفصل معين من نادي الروايات
-const targetUrl = 'https://rewayat.club/novel/open-30000-simulations-every-day/1';
-
-async function scrapeRewayatChapter() {
+/**
+ * دالة جلب البيانات مع محاكاة متصفح كاملة لتجنب 403 و 500
+ */
+async function scrapeNovelChapter(url) {
     try {
-        console.log(`[LOG] جاري محاولة استخراج الفصل من: ${targetUrl}`);
+        console.log(`[LOG] محاولة استخراج الفصل من: ${url}`);
 
-        // استخدام بروكسي بسيط لتجنب أي حظر IP محتمل
-        const bridgeUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-
-        const response = await axios.get(bridgeUrl, {
-            timeout: 30000,
+        // الرؤوس (Headers) ضرورية جداً لإقناع السيرفر أنك متصفح حقيقي وليس كود برمجي
+        const config = {
+            timeout: 15000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Referer': 'https://rewayat.club/',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'same-origin',
+                'Upgrade-Insecure-Requests': '1'
+            }
+        };
+
+        const response = await axios.get(url, config);
+        const html = response.data;
+        const $ = cheerio.load(html);
+
+        // --- استخراج البيانات ---
+        
+        // 1. العنوان
+        let title = $('title').text().replace('- نادي الروايات', '').trim();
+        if (!title || title === "Server error") {
+            title = $('h1').first().text().trim() || "عنوان غير معروف";
+        }
+
+        // 2. المحتوى (تعديل بناءً على الـ HTML المرسل)
+        // نادي الروايات يضع النص غالباً داخل عناصر تنتمي لـ v-application
+        let content = '';
+        
+        // استهداف الحاوية التي تحتوي على النص (جربنا كلاسات متعددة)
+        let contentArea = $('.chapter-content, .content, main, article, .v-main__wrap').find('p');
+        
+        if (contentArea.length > 0) {
+            contentArea.each((i, el) => {
+                const text = $(el).text().trim();
+                if (text) content += text + '\n\n';
+            });
+        } else {
+            // محاولة أخيرة: البحث عن أكبر div يحتوي على نصوص
+            content = $('div').filter(function() {
+                return $(this).children('p').length > 3;
+            }).first().text().trim();
+        }
+
+        // 3. رابط الفصل التالي
+        let nextChapter = null;
+        $('a').each((i, el) => {
+            const linkText = $(el).text();
+            if (linkText.includes('التالي') || linkText.includes('Next')) {
+                const href = $(el).attr('href');
+                if (href) {
+                    nextChapter = href.startsWith('http') ? href : `https://rewayat.club${href}`;
+                }
             }
         });
 
-        if (!response.data || !response.data.contents) {
-            throw new Error("فشل الحصول على محتوى الصفحة.");
-        }
-
-        const html = response.data.contents;
-        const $ = cheerio.load(html);
-
-        // --- استخراج البيانات بناءً على هيكلية صفحة الفصل ---
-
-        // 1. استخراج العنوان (يكون عادة في الـ title أو h1)
-        const rawTitle = $('title').text().split('-')[0].trim();
-        
-        // 2. استخراج محتوى الفصل
-        // الموقع يستخدم كلاسات Nuxt/Vuetify. الحاوية الرئيسية للنص غالباً ما تكون داخل 'v-application'
-        // سنستهدف العناصر التي تحتوي على النص الفعلي للرواية
-        let chapterBody = $('.chapter-content, .content, main, article').first();
-
-        // إذا لم يجد الكلاسات الشهيرة، نبحث عن الحاوية التي تحتوي على أكبر قدر من الفقرات (p)
-        if (chapterBody.length === 0) {
-            chapterBody = $('div').filter(function() {
-                return $(this).find('p').length > 5;
-            }).first();
-        }
-
-        // --- تنظيف المحتوى ---
-        // إزالة العناصر غير النصية مثل الأزرار، أيقونات SVG، التنبيهات، والقوائم الجانبية
-        chapterBody.find('button, script, style, svg, .v-btn, .v-navigation-drawer, header, footer, .toasted-container').remove();
-
-        let cleanText = '';
-        
-        // استخراج النصوص من الفقرات للحفاظ على التنسيق
-        const paragraphs = chapterBody.find('p');
-        if (paragraphs.length > 0) {
-            paragraphs.each((i, el) => {
-                const pText = $(el).text().trim();
-                if (pText) cleanText += pText + '\n\n';
-            });
-        } else {
-            // fallback في حال كانت الرواية ليست داخل وسوم p
-            cleanText = chapterBody.text().replace(/\s\s+/g, '\n\n').trim();
-        }
-
-        // 3. استخراج رابط الفصل التالي
-        // نبحث عن أزرار التنقل (عادة تحتوي على كلمة "التالي")
-        let nextLink = $('a').filter(function() {
-            const txt = $(this).text().toLowerCase();
-            return txt.includes('التالي') || txt.includes('next');
-        }).attr('href');
-
-        const fullNextUrl = nextLink ? (nextLink.startsWith('http') ? nextLink : `https://rewayat.club${nextLink}`) : null;
-
-        console.log(`[SUCCESS] تم استخراج: ${rawTitle}`);
+        console.log(`[SUCCESS] تم جلب: ${title}`);
 
         return {
             status: 'success',
             data: {
-                title: rawTitle,
-                content: cleanText,
-                nextChapter: fullNextUrl,
-                source: targetUrl
+                title,
+                content: content || "فشل استخراج النص، قد يكون المحتوى محمي أو بتنسيق مختلف.",
+                nextChapter,
+                source: url
             }
         };
 
@@ -85,26 +86,29 @@ async function scrapeRewayatChapter() {
         console.error(`[ERROR] ${error.message}`);
         return {
             status: 'error',
-            message: error.message
+            message: `فشل الجلب: ${error.message}`,
+            hint: "إذا كان الخطأ 403، فالموقع محمي بـ Cloudflare ويتطلب Playwright أو Puppeteer."
         };
     }
 }
 
-// إعداد السيرفر للعرض
-const http = require('http');
+// إنشاء السيرفر
 const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
-    if (req.url === '/fetch') {
-        const result = await scrapeRewayatChapter();
+    // التعامل مع الروابط من خلال query parameter أو رابط افتراضي
+    if (req.url.startsWith('/fetch')) {
+        const target = "https://rewayat.club/novel/open-30000-simulations-every-day/1";
+        const result = await scrapeNovelChapter(target);
         res.writeHead(200);
         res.end(JSON.stringify(result, null, 2));
     } else {
         res.writeHead(200);
-        res.end(JSON.stringify({ message: "استخدم المسار /fetch لجلب الفصل" }));
+        res.end(JSON.stringify({ message: "Welcome! Use /fetch to start scraping." }));
     }
 });
 
-server.listen(8080, () => {
-    console.log('Scraper is active on port 8080');
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+    console.log(`Scraper is active on port ${PORT}`);
 });
