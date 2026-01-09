@@ -238,7 +238,7 @@ def background_worker(url, admin_email, author_name):
     print(f"📖 Found Novel: {metadata['title']} ({metadata['total_chapters']} Chapters)")
 
     # 2. تجهيز أو تحديث الرواية في MongoDB
-    if novels_collection:
+    if novels_collection is not None:
         existing_novel = novels_collection.find_one({'title': metadata['title'], 'authorEmail': admin_email})
         
         novel_doc = {
