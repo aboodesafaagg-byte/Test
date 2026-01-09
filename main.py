@@ -26,24 +26,32 @@ API_SECRET = os.environ.get('API_SECRET', 'Zeusndndjddnejdjdjdejekk29393838msmsk
 # ==========================================
 
 # 1. MongoDB Setup
+# تم التعديل ليطابق الاسم في الصورة: MONGODB_URI
 MONGO_URI = os.environ.get('MONGODB_URI')
 if MONGO_URI:
     try:
         mongo_client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-        mongo_db = mongo_client.get_database() # يستخدم قاعدة البيانات الافتراضية في الرابط
+        # تحديد قاعدة بيانات افتراضية باسم zeus لضمان عمل العمليات
+        mongo_db = mongo_client['zeus'] 
         novels_collection = mongo_db['novels']
         print("✅ Connected to MongoDB")
     except Exception as e:
         print(f"❌ MongoDB Connection Error: {e}")
 else:
-    print("⚠️ MONGO_URI not found in env vars")
+    print("⚠️ MONGODB_URI not found in env vars")
 
 # 2. Firebase Setup
+# تم التعديل ليطابق الاسم في الصورة: FIREBASE_SERVICE_ACCOUNT
 FIREBASE_KEY = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
 if FIREBASE_KEY:
     try:
         # إذا كان المفتاح نص JSON (كما في Railway Variables)
         cred_dict = json.loads(FIREBASE_KEY)
+        
+        # معالجة المفتاح الخاص لضمان قراءة السطور الجديدة بشكل صحيح في بيئة الإنتاج
+        if 'private_key' in cred_dict:
+            cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
+            
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
         firestore_db = firestore.client()
@@ -51,7 +59,7 @@ if FIREBASE_KEY:
     except Exception as e:
         print(f"❌ Firebase Connection Error: {e}")
 else:
-    print("⚠️ FIREBASE_KEY not found in env vars")
+    print("⚠️ FIREBASE_SERVICE_ACCOUNT not found in env vars")
 
 # ==========================================
 # منطق السحب (Scraper Logic)
@@ -138,11 +146,9 @@ def scrape_chapter_content(slug, chapter_num):
             soup = BeautifulSoup(response.content, 'html.parser')
             
             # محاولة إيجاد النص في العناصر الشائعة
-            # بناءً على بنية الموقع: <div class="content-area"> أو <div class="v-card__text">
             content_div = soup.find('div', class_='content-area')
             
             if not content_div:
-                # محاولة بديلة: البحث عن أي div يحتوي على نصوص p كثيرة
                 content_div = soup.find('div', class_=lambda x: x and 'unselectable' in x)
             
             if content_div:
@@ -152,7 +158,6 @@ def scrape_chapter_content(slug, chapter_num):
             
             # محاولة أخيرة: سحب كل النصوص p
             paragraphs = soup.find_all('p')
-            # تصفية النصوص القصيرة جداً (مثل القوائم)
             clean_text = "\n\n".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
             return clean_text
             
@@ -193,12 +198,10 @@ def background_worker(url, admin_email, author_name):
         'createdAt': datetime.now()
     }
 
-    # البحث إذا كانت موجودة لتحديثها
     existing_novel = novels_collection.find_one({'title': metadata['title'], 'authorEmail': admin_email})
     
     if existing_novel:
         novel_id = existing_novel['_id']
-        # تحديث الحقول فقط
         novels_collection.update_one({'_id': novel_id}, {'$set': {
             'cover': metadata['cover'],
             'status': metadata['status'],
@@ -215,16 +218,12 @@ def background_worker(url, admin_email, author_name):
     print(f"📚 Found {len(chapters_list)} chapters.")
 
     # 4. سحب الفصول وحفظها
-    new_chapters_meta = [] # لتحديث MongoDB
-    
-    # نحضر الفصول الموجودة حالياً لتجنب التكرار
     current_novel = novels_collection.find_one({'_id': novel_id})
     existing_numbers = [c['number'] for c in current_novel.get('chapters', [])]
 
     for chap in chapters_list:
         num = chap['number']
         
-        # إذا الفصل موجود، تخطاه (يمكنك إزالة هذا الشرط إذا أردت تحديث المحتوى)
         if num in existing_numbers:
             print(f"⏩ Skipping Chapter {num} (Already exists)")
             continue
@@ -233,7 +232,7 @@ def background_worker(url, admin_email, author_name):
         content = scrape_chapter_content(slug, num)
         
         if content:
-            # A. الحفظ في Firebase (المحتوى النصي)
+            # A. الحفظ في Firebase
             try:
                 doc_ref = firestore_db.collection('novels').document(str(novel_id)).collection('chapters').document(str(num))
                 doc_ref.set({
@@ -245,7 +244,7 @@ def background_worker(url, admin_email, author_name):
                 print(f"❌ Firebase Error Ch {num}: {e}")
                 continue
 
-            # B. التجهيز لـ MongoDB (الميتا داتا)
+            # B. التجهيز لـ MongoDB
             chapter_meta = {
                 'number': num,
                 'title': chap['title'],
@@ -253,7 +252,6 @@ def background_worker(url, admin_email, author_name):
                 'views': 0
             }
             
-            # إضافة لـ Mongo مباشرة لتحديث القائمة فوراً
             novels_collection.update_one(
                 {'_id': novel_id},
                 {'$push': {'chapters': chapter_meta}}
@@ -276,7 +274,6 @@ def health_check():
 
 @app.route('/scrape', methods=['POST'])
 def trigger_scrape():
-    # 1. التحقق من المفتاح السري
     auth_header = request.headers.get('Authorization')
     if auth_header != API_SECRET:
         return jsonify({'message': 'Unauthorized'}), 401
@@ -289,9 +286,8 @@ def trigger_scrape():
     if not url or 'rewayat.club' not in url:
         return jsonify({'message': 'Invalid URL. Must be from rewayat.club'}), 400
 
-    # 2. تشغيل السحب في عملية منفصلة (Thread)
     thread = threading.Thread(target=background_worker, args=(url, admin_email, author_name))
-    thread.daemon = True # لتعمل في الخلفية
+    thread.daemon = True
     thread.start()
 
     return jsonify({
@@ -300,7 +296,5 @@ def trigger_scrape():
     }), 200
 
 if __name__ == "__main__":
-    from datetime import datetime
-    # تشغيل السيرفر
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
