@@ -32,6 +32,28 @@ def get_headers():
         'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
     }
 
+def extract_from_nuxt(soup):
+    """استخراج رابط الصورة من بيانات Nuxt الخام (الأكثر دقة)"""
+    try:
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and 'window.__NUXT__' in script.string:
+                content = script.string
+                # البحث عن poster_url أو poster
+                # النمط يتعامل مع الروابط المشفرة بـ unicode مثل \u002F
+                match = re.search(r'poster_url:"(.*?)"', content)
+                if not match:
+                    match = re.search(r'poster:"(.*?)"', content)
+                
+                if match:
+                    raw_url = match.group(1)
+                    # فك تشفير الرابط (تحويل \u002F إلى /)
+                    clean_url = raw_url.encode('utf-8').decode('unicode_escape')
+                    return clean_url
+    except Exception as e:
+        print(f"Error extracting from Nuxt: {e}")
+    return None
+
 def extract_background_image(style_str):
     """استخراج الرابط من ستايل background-image مع تنظيف رموز HTML"""
     if not style_str: return ''
@@ -57,7 +79,6 @@ def is_valid_tag(text):
     if text in ['مكتملة', 'متوقفة', 'مستمرة', 'مترجمة', 'رواية', 'عمل']: return False
     
     # استبعاد الأرقام (مثل 1,824 أو 101)
-    # إزالة الفواصل والرموز للتحقق
     clean_text = text.replace(',', '').replace('.', '').replace('x', '').strip()
     if clean_text.isdigit(): return False
     
@@ -68,6 +89,22 @@ def is_valid_tag(text):
     if not re.search(r'[\u0600-\u06FF]', text): return False
     
     return True
+
+def fix_image_url(url):
+    """إصلاح الرابط النسبي وإضافة النطاق الصحيح"""
+    if not url: return ""
+    
+    # حسب السجلات، الصور تأتي من api.rewayat.club
+    base_api_url = 'https://api.rewayat.club'
+    
+    if url.startswith('//'):
+        return 'https:' + url
+    elif url.startswith('/'):
+        return base_api_url + url
+    elif not url.startswith('http'):
+        return base_api_url + '/' + url
+        
+    return url
 
 def fetch_novel_metadata_html(url):
     """جلب معلومات الرواية من HTML الصفحة مباشرة"""
@@ -84,48 +121,49 @@ def fetch_novel_metadata_html(url):
         title_tag = soup.find('h1')
         title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
         
-        # 2. Cover (Enhanced Logic)
+        # 2. Cover (استراتيجية مُحسنة جداً)
         cover_url = ""
         
-        # محاولة 1: البحث في meta og:image (الأكثر دقة)
-        og_image = soup.find("meta", property="og:image")
-        if og_image and og_image.get("content"):
-            cover_url = og_image["content"]
+        # الطريقة 1: استخراج من بيانات Nuxt (الذهبية)
+        nuxt_image = extract_from_nuxt(soup)
+        if nuxt_image:
+            cover_url = nuxt_image
+            print(f"📸 Found image via Nuxt data: {cover_url}")
         
-        # محاولة 2: البحث في الخلفية CSS
+        # الطريقة 2: البحث في meta og:image
         if not cover_url:
+            og_image = soup.find("meta", property="og:image")
+            if og_image and og_image.get("content"):
+                cover_url = og_image["content"]
+        
+        # الطريقة 3: البحث في الخلفية CSS
+        if not cover_url:
+            # البحث عن العنصر الذي يحمل الصورة كخلفية
             img_div = soup.find('div', class_='v-image__image--cover')
             if img_div and img_div.has_attr('style'):
                 cover_url = extract_background_image(img_div['style'])
         
-        # إصلاح الرابط النسبي
-        if cover_url and not cover_url.startswith('http'):
-            if cover_url.startswith('//'):
-                cover_url = 'https:' + cover_url
-            elif cover_url.startswith('/'):
-                base_url = 'https://rewayat.club' # أو استخلاص النطاق من الرابط الأصلي
-                cover_url = base_url + cover_url
+        # إصلاح الرابط النهائي
+        cover_url = fix_image_url(cover_url)
 
         # 3. Description
         desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
         description = desc_div.get_text(strip=True) if desc_div else ""
         
-        # 4. Status & Category (مع الفلترة الجديدة)
+        # 4. Status & Category (مع الفلترة)
         status = "مستمرة"
         tags = []
         category = "عام"
         
-        # البحث فقط داخل القسم العلوي لتجنب فصول القائمة
-        # عادة التصنيفات تكون في v-chip-group في الأعلى
+        # البحث في الرقائق (Chips) العلوية فقط لتجنب عداد الفصول
         chip_groups = soup.find_all(class_='v-chip-group')
-        
         target_chips = []
+        
         if chip_groups:
-            # نأخذ المجموعات العلوية فقط (عادة الأولى أو الثانية)
-            for group in chip_groups[:2]:
+            # عادة التصنيفات تكون في المجموعات الأولى
+            for group in chip_groups[:2]: 
                 target_chips.extend(group.find_all(class_='v-chip__content'))
         else:
-            # fallback
             target_chips = soup.find_all(class_='v-chip__content')
 
         for chip in target_chips:
@@ -136,9 +174,7 @@ def fetch_novel_metadata_html(url):
             elif is_valid_tag(text):
                 tags.append(text)
         
-        # إزالة التكرار
-        tags = list(set(tags))
-        
+        tags = list(set(tags)) # إزالة التكرار
         if tags:
             category = tags[0]
 
@@ -149,7 +185,6 @@ def fetch_novel_metadata_html(url):
         if chapter_match:
             total_chapters = int(chapter_match.group(1))
         else:
-            # البحث في التبويبات
             tabs = soup.find_all(class_='v-tab')
             for tab in tabs:
                 tab_text = tab.get_text(strip=True)
