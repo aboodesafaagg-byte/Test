@@ -1,60 +1,83 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const iconv = require('iconv-lite');
 
-// تحديث الرابط المستهدف للموقع الجديد
-const targetUrl = 'https://www.novel543.com/1227676079/8095_1128.html';
+// الرابط المستهدف لفصل معين من نادي الروايات
+const targetUrl = 'https://rewayat.club/novel/open-30000-simulations-every-day/1';
 
-async function scrapeWithFinalSolution() {
+async function scrapeRewayatChapter() {
     try {
-        console.log(`[LOG] محاولة جلب البيانات من الموقع الجديد عبر جسر Proxy...`);
+        console.log(`[LOG] جاري محاولة استخراج الفصل من: ${targetUrl}`);
 
-        // استخدام خدمة Proxy لتغيير الـ IP وضمان الوصول
+        // استخدام بروكسي بسيط لتجنب أي حظر IP محتمل
         const bridgeUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
 
-        const response = await axios.get(bridgeUrl, { timeout: 30000 });
+        const response = await axios.get(bridgeUrl, {
+            timeout: 30000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
 
         if (!response.data || !response.data.contents) {
-            throw new Error("لم يتم الحصول على استجابة من جسر الـ Proxy.");
+            throw new Error("فشل الحصول على محتوى الصفحة.");
         }
 
-        const htmlContent = response.data.contents;
-        const $ = cheerio.load(htmlContent);
+        const html = response.data.contents;
+        const $ = cheerio.load(html);
 
-        // --- تحديث الاستخراج ليتناسب مع الموقع الجديد ---
+        // --- استخراج البيانات بناءً على هيكلية صفحة الفصل ---
+
+        // 1. استخراج العنوان (يكون عادة في الـ title أو h1)
+        const rawTitle = $('title').text().split('-')[0].trim();
         
-        // 1. استخراج العنوان (موجود داخل h1 في الموقع الجديد)
-        const title = $('.chapter-content h1').text().trim();
+        // 2. استخراج محتوى الفصل
+        // الموقع يستخدم كلاسات Nuxt/Vuetify. الحاوية الرئيسية للنص غالباً ما تكون داخل 'v-application'
+        // سنستهدف العناصر التي تحتوي على النص الفعلي للرواية
+        let chapterBody = $('.chapter-content, .content, main, article').first();
 
-        if (!title) {
-            throw new Error("فشل استخراج العنوان. قد تكون هيكلية الصفحة مختلفة أو هناك حظر.");
+        // إذا لم يجد الكلاسات الشهيرة، نبحث عن الحاوية التي تحتوي على أكبر قدر من الفقرات (p)
+        if (chapterBody.length === 0) {
+            chapterBody = $('div').filter(function() {
+                return $(this).find('p').length > 5;
+            }).first();
         }
 
-        // 2. تنظيف المحتوى (إزالة الإعلانات والوسوم غير المرغوبة داخل المحتوى)
-        // الموقع الجديد يضع النص داخل div.content
-        $('.content.py-5 .gadBlock, .content.py-5 .adBlock, .content.py-5 script, .content.py-5 div').remove();
-        
-        let content = $('.content.py-5').text();
-        
-        // 3. تنظيف النصوص من الفراغات والرموز الزائدة
-        content = content
-            .replace(/\t/g, '')
-            .replace(/\n\s*\n/g, '\n\n')
-            .trim();
+        // --- تنظيف المحتوى ---
+        // إزالة العناصر غير النصية مثل الأزرار، أيقونات SVG، التنبيهات، والقوائم الجانبية
+        chapterBody.find('button, script, style, svg, .v-btn, .v-navigation-drawer, header, footer, .toasted-container').remove();
 
-        // 4. استخراج رابط الفصل التالي
-        // الموقع الجديد يضع الروابط في متغيرات js أو في أزرار التنقل تحت اسم "下一章"
-        const nextUrl = $('.foot-nav a:contains("下一章")').attr('href');
-        const fullNextUrl = nextUrl ? (nextUrl.startsWith('http') ? nextUrl : `https://www.novel543.com${nextUrl}`) : null;
-
-        console.log(`[SUCCESS] تم جلب الفصل بنجاح: ${title}`);
+        let cleanText = '';
         
+        // استخراج النصوص من الفقرات للحفاظ على التنسيق
+        const paragraphs = chapterBody.find('p');
+        if (paragraphs.length > 0) {
+            paragraphs.each((i, el) => {
+                const pText = $(el).text().trim();
+                if (pText) cleanText += pText + '\n\n';
+            });
+        } else {
+            // fallback في حال كانت الرواية ليست داخل وسوم p
+            cleanText = chapterBody.text().replace(/\s\s+/g, '\n\n').trim();
+        }
+
+        // 3. استخراج رابط الفصل التالي
+        // نبحث عن أزرار التنقل (عادة تحتوي على كلمة "التالي")
+        let nextLink = $('a').filter(function() {
+            const txt = $(this).text().toLowerCase();
+            return txt.includes('التالي') || txt.includes('next');
+        }).attr('href');
+
+        const fullNextUrl = nextLink ? (nextLink.startsWith('http') ? nextLink : `https://rewayat.club${nextLink}`) : null;
+
+        console.log(`[SUCCESS] تم استخراج: ${rawTitle}`);
+
         return {
             status: 'success',
             data: {
-                title,
+                title: rawTitle,
+                content: cleanText,
                 nextChapter: fullNextUrl,
-                content: content // إرسال النص كاملاً
+                source: targetUrl
             }
         };
 
@@ -62,32 +85,26 @@ async function scrapeWithFinalSolution() {
         console.error(`[ERROR] ${error.message}`);
         return {
             status: 'error',
-            message: `فشل تجاوز الحماية أو استخراج البيانات: ${error.message}`,
-            suggestion: "تأكد من أن روابط الموقع لا تزال تعمل، أو جرب تحديث الـ Selectors إذا قام الموقع بتغيير تصميمه."
+            message: error.message
         };
     }
 }
 
+// إعداد السيرفر للعرض
 const http = require('http');
 const server = http.createServer(async (req, res) => {
-    // دعم اللغة العربية والصينية في الاستجابة
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
-    if (req.url === '/test') {
-        const result = await scrapeWithFinalSolution();
+    if (req.url === '/fetch') {
+        const result = await scrapeRewayatChapter();
         res.writeHead(200);
         res.end(JSON.stringify(result, null, 2));
     } else {
         res.writeHead(200);
-        res.end(JSON.stringify({ 
-            status: 'Novel543 Scraper Active',
-            endpoint: '/test',
-            note: 'Current target: https://www.novel543.com'
-        }));
+        res.end(JSON.stringify({ message: "استخدم المسار /fetch لجلب الفصل" }));
     }
 });
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+server.listen(8080, () => {
+    console.log('Scraper is active on port 8080');
 });
