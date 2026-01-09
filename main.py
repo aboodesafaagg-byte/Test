@@ -1,17 +1,18 @@
 import requests
 from bs4 import BeautifulSoup
-import os
 import time
+from fastapi import FastAPI, BackgroundTasks
+from typing import List
 
-# --- الإعدادات ---
-BASE_URL = "https://rewayat.club/novel/you-are-running-30000-simulations-a-day-trying-to-stay-healthy-or-what/"
-TOTAL_CHAPTERS = 5  # لغرض التجربة على Railway سنكتفي بـ 5 فصول
+app = FastAPI()
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 }
 
-def fetch_chapter(chapter_num):
-    url = f"{BASE_URL}{chapter_num}"
+# دالة سحب محتوى فصل واحد
+def fetch_chapter_data(novel_slug: str, chapter_num: int):
+    url = f"https://rewayat.club/novel/{novel_slug}/{chapter_num}"
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code == 200:
@@ -19,27 +20,45 @@ def fetch_chapter(chapter_num):
             
             # استخراج العنوان
             title_tag = soup.find('div', class_='v-card__subtitle')
-            chapter_title = title_tag.get_text(strip=True) if title_tag else f"Chapter {chapter_num}"
+            chapter_title = title_tag.get_text(strip=True) if title_tag else f"فصل {chapter_num}"
             
             # استخراج المحتوى
             paragraphs = soup.find_all('p')
             clean_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text()) > 30]
             content = "\n\n".join(clean_paragraphs)
             
-            # عرض النتيجة في الـ Logs لكي تراها في Railway
-            print(f"✅ تم سحب الفصل {chapter_num}: {chapter_title}")
-            print(f"📝 بداية النص: {content[:100]}...") # نطبع أول 100 حرف للتأكد
-            print("-" * 20)
-            
-        else:
-            print(f"❌ فشل تحميل الفصل {chapter_num} - رمز الخطأ: {response.status_code}")
-            
+            return {"chapter": chapter_num, "title": chapter_title, "content": content}
     except Exception as e:
-        print(f"⚠️ خطأ في الفصل {chapter_num}: {str(e)}")
+        print(f"Error in chapter {chapter_num}: {e}")
+    return None
+
+# Endpoint لجلب فصل واحد مباشرة (للتجربة من التطبيق)
+@app.get("/fetch-chapter/{novel_slug}/{chapter_num}")
+async def get_chapter(novel_slug: str, chapter_num: int):
+    data = fetch_chapter_data(novel_slug, chapter_num)
+    if data:
+        return data
+    return {"error": "Could not fetch chapter"}
+
+# Endpoint لجلب معلومات الرواية الأساسية (صورة، عنوان، وصف)
+@app.get("/novel-info/{novel_slug}")
+async def get_novel_info(novel_slug: str):
+    url = f"https://rewayat.club/novel/{novel_slug}"
+    response = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # استخراج البيانات الأساسية (بناءً على بنية الموقع)
+    title = soup.find('h1').get_text(strip=True) if soup.find('h1') else novel_slug
+    # ملاحظة: استخراج الصورة والوصف يعتمد على الكلاسات الحالية في الموقع
+    
+    return {
+        "title": title,
+        "slug": novel_slug,
+        "source": "نادي الروايات"
+    }
 
 if __name__ == "__main__":
-    print("🚀 بدء تشغيل السكريبت على Railway...")
-    for i in range(1, TOTAL_CHAPTERS + 1):
-        fetch_chapter(i)
-        time.sleep(2)
-    print("✨ انتهت التجربة بنجاح!")
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
