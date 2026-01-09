@@ -40,14 +40,13 @@ def extract_from_nuxt(soup):
             if script.string and 'window.__NUXT__' in script.string:
                 content = script.string
                 # البحث عن poster_url أو poster
-                # النمط يتعامل مع الروابط المشفرة بـ unicode مثل \u002F
                 match = re.search(r'poster_url:"(.*?)"', content)
                 if not match:
                     match = re.search(r'poster:"(.*?)"', content)
                 
                 if match:
                     raw_url = match.group(1)
-                    # فك تشفير الرابط (تحويل \u002F إلى /)
+                    # فك تشفير الرابط
                     clean_url = raw_url.encode('utf-8').decode('unicode_escape')
                     return clean_url
     except Exception as e:
@@ -55,55 +54,37 @@ def extract_from_nuxt(soup):
     return None
 
 def extract_background_image(style_str):
-    """استخراج الرابط من ستايل background-image مع تنظيف رموز HTML"""
+    """استخراج الرابط من ستايل background-image"""
     if not style_str: return ''
-    
-    # تنظيف النص من رموز HTML مثل &quot;
     clean_style = style_str.replace('&quot;', '"').replace("&#39;", "'")
-    
-    # البحث عن الرابط
     match = re.search(r'url\s*\((.*?)\)', clean_style, re.IGNORECASE)
     if match:
         url = match.group(1).strip()
-        # إزالة علامات التنصيص إذا وجدت
         url = url.strip('"\'')
         return url
     return ''
 
 def is_valid_tag(text):
-    """التحقق مما إذا كان النص تصنيفاً صالحاً أم مجرد رقم أو إحصائية"""
+    """التحقق مما إذا كان النص تصنيفاً صالحاً"""
     text = text.strip()
     if not text: return False
-    
-    # استبعاد الكلمات المحجوزة
     if text in ['مكتملة', 'متوقفة', 'مستمرة', 'مترجمة', 'رواية', 'عمل']: return False
-    
-    # استبعاد الأرقام (مثل 1,824 أو 101)
     clean_text = text.replace(',', '').replace('.', '').replace('x', '').strip()
     if clean_text.isdigit(): return False
-    
-    # استبعاد الصيغ مثل "101 x"
     if re.search(r'^\d+\s*x$', text, re.IGNORECASE): return False 
-    
-    # يجب أن يحتوي على حروف عربية ليكون تصنيفاً
     if not re.search(r'[\u0600-\u06FF]', text): return False
-    
     return True
 
 def fix_image_url(url):
     """إصلاح الرابط النسبي وإضافة النطاق الصحيح"""
     if not url: return ""
-    
-    # حسب السجلات، الصور تأتي من api.rewayat.club
     base_api_url = 'https://api.rewayat.club'
-    
     if url.startswith('//'):
         return 'https:' + url
     elif url.startswith('/'):
         return base_api_url + url
     elif not url.startswith('http'):
         return base_api_url + '/' + url
-        
     return url
 
 def fetch_novel_metadata_html(url):
@@ -121,46 +102,36 @@ def fetch_novel_metadata_html(url):
         title_tag = soup.find('h1')
         title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
         
-        # 2. Cover (استراتيجية مُحسنة جداً)
+        # 2. Cover
         cover_url = ""
-        
-        # الطريقة 1: استخراج من بيانات Nuxt (الذهبية)
         nuxt_image = extract_from_nuxt(soup)
         if nuxt_image:
             cover_url = nuxt_image
-            print(f"📸 Found image via Nuxt data: {cover_url}")
         
-        # الطريقة 2: البحث في meta og:image
         if not cover_url:
             og_image = soup.find("meta", property="og:image")
             if og_image and og_image.get("content"):
                 cover_url = og_image["content"]
         
-        # الطريقة 3: البحث في الخلفية CSS
         if not cover_url:
-            # البحث عن العنصر الذي يحمل الصورة كخلفية
             img_div = soup.find('div', class_='v-image__image--cover')
             if img_div and img_div.has_attr('style'):
                 cover_url = extract_background_image(img_div['style'])
         
-        # إصلاح الرابط النهائي
         cover_url = fix_image_url(cover_url)
 
         # 3. Description
         desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
         description = desc_div.get_text(strip=True) if desc_div else ""
         
-        # 4. Status & Category (مع الفلترة)
+        # 4. Status & Category
         status = "مستمرة"
         tags = []
         category = "عام"
         
-        # البحث في الرقائق (Chips) العلوية فقط لتجنب عداد الفصول
         chip_groups = soup.find_all(class_='v-chip-group')
         target_chips = []
-        
         if chip_groups:
-            # عادة التصنيفات تكون في المجموعات الأولى
             for group in chip_groups[:2]: 
                 target_chips.extend(group.find_all(class_='v-chip__content'))
         else:
@@ -168,13 +139,12 @@ def fetch_novel_metadata_html(url):
 
         for chip in target_chips:
             text = chip.get_text(strip=True)
-            
             if text in ['مكتملة', 'متوقفة', 'مستمرة']:
                 status = text
             elif is_valid_tag(text):
                 tags.append(text)
         
-        tags = list(set(tags)) # إزالة التكرار
+        tags = list(set(tags))
         if tags:
             category = tags[0]
 
@@ -264,9 +234,12 @@ def send_data_to_backend(payload):
         print(f"❌ Failed to send data to backend: {e}")
         return False
 
-def background_worker(url, admin_email, author_name):
+# ==========================================
+# دالة الخلفية المعدلة (تدعم إكمال النواقص)
+# ==========================================
+def background_worker(url, admin_email, author_name, start_from=1, update_info=True):
     """الوظيفة التي تعمل في الخلفية"""
-    print(f"🚀 Starting Scraper for: {url}")
+    print(f"🚀 Starting Scraper for: {url} | Start Chapter: {start_from} | Update Info: {update_info}")
     
     # 1. جلب البيانات الوصفية للرواية
     metadata = fetch_novel_metadata_html(url)
@@ -277,26 +250,31 @@ def background_worker(url, admin_email, author_name):
 
     print(f"📖 Found Novel: {metadata['title']} ({metadata['total_chapters']} Chapters)")
 
-    # 2. إرسال البيانات الوصفية أولاً لإنشاء الرواية ورفع الصورة في الخادم
-    init_payload = {
-        'adminEmail': admin_email,
-        'novelData': metadata,
-        'chapters': [] 
-    }
-    
-    if not send_data_to_backend(init_payload):
-        print("❌ Stopping execution because initial handshake failed.")
-        return
+    # 2. إرسال البيانات الوصفية (Initial Payload)
+    # نرسلها فقط إذا كنا نبدأ من البداية ونريد التحديث الكامل.
+    # إذا كنا نكمل النواقص، نتخطى هذه الخطوة لمنع الكتابة فوق الصورة/الوصف القديم في الباك اند.
+    if start_from == 1 and update_info:
+        init_payload = {
+            'adminEmail': admin_email,
+            'novelData': metadata,
+            'chapters': [] 
+        }
+        if not send_data_to_backend(init_payload):
+            print("❌ Stopping execution because initial handshake failed.")
+            return
+    else:
+        print(f"ℹ️ Skipping initial metadata push (Start From: {start_from}).")
 
     # 3. حلقة سحب الفصول وإرسالها على دفعات (Batches)
     total = metadata['total_chapters']
     if total == 0:
-        total = 50 
+        total = 2000 # احتياط
         
     batch_size = 5 
     current_batch = []
 
-    for num in range(1, total + 1):
+    # نبدأ الحلقة من start_from بدلاً من 1
+    for num in range(start_from, total + 1):
         chap_title, content = scrape_chapter_content_html(url, num)
         
         if content:
@@ -316,7 +294,8 @@ def background_worker(url, admin_email, author_name):
                 payload = {
                     'adminEmail': admin_email,
                     'novelData': metadata, 
-                    'chapters': current_batch
+                    'chapters': current_batch,
+                    'isUpdate': (start_from > 1) # علامة للباك اند أن هذا تحديث
                 }
                 send_data_to_backend(payload)
                 current_batch = [] 
@@ -330,7 +309,7 @@ def background_worker(url, admin_email, author_name):
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "ZEUS Scraper Service (Relay Mode) is Running ⚡", 200
+    return "ZEUS Scraper Service (Relay Mode - Update Supported) is Running ⚡", 200
 
 @app.route('/scrape', methods=['POST'])
 def trigger_scrape():
@@ -345,17 +324,25 @@ def trigger_scrape():
     url = data.get('url')
     admin_email = data.get('adminEmail')
     author_name = data.get('authorName', 'ZEUS Bot')
+    
+    # استقبال خيارات التحديث وإكمال النواقص
+    # الافتراضي يبدأ من 1 ويحدث كل شيء
+    start_from = int(data.get('startFrom', 1))
+    
+    # إذا بدأنا من 1، فالافتراضي تحديث المعلومات، غير ذلك الافتراضي عدم التحديث
+    default_update = True if start_from == 1 else False
+    update_info = data.get('updateInfo', default_update)
 
     if not url or 'rewayat.club' not in url:
         return jsonify({'message': 'Invalid URL. Must be from rewayat.club'}), 400
 
-    # بدء العمل في الخلفية
-    thread = threading.Thread(target=background_worker, args=(url, admin_email, author_name))
+    # بدء العمل في الخلفية مع المعاملات الجديدة
+    thread = threading.Thread(target=background_worker, args=(url, admin_email, author_name, start_from, update_info))
     thread.daemon = True 
     thread.start()
 
     return jsonify({
-        'message': 'تم بدء العملية. سيتم إرسال البيانات للخادم الرئيسي تدريجياً.',
+        'message': f'تم بدء العملية من الفصل {start_from}.',
         'status': 'started'
     }), 200
 
