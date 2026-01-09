@@ -304,7 +304,7 @@ def background_worker(url, admin_email, author_name):
                     })
 
                 # ب) التحديث في MongoDB (الميتا داتا)
-                if novels_collection:
+                if novels_collection is not None:  # ✅ هذا هو التصحيح المطلوب
                     chapter_meta = {
                         'number': num,
                         'title': chap_title,
