@@ -19,7 +19,6 @@ CORS(app)
 API_SECRET = os.environ.get('API_SECRET', 'Zeusndndjddnejdjdjdejekk29393838msmskxcm9239484jdndjdnddjj99292938338zeuslojdnejxxmejj82283849')
 
 # رابط الخادم الرئيسي (Node.js)
-# يتم جلبه من متغيرات البيئة أو استخدام الرابط الافتراضي
 NODE_BACKEND_URL = os.environ.get('NODE_BACKEND_URL', 'https://c-production-3db6.up.railway.app')
 
 # ==========================================
@@ -34,14 +33,41 @@ def get_headers():
     }
 
 def extract_background_image(style_str):
-    """استخراج الرابط من ستايل background-image"""
+    """استخراج الرابط من ستايل background-image مع تنظيف رموز HTML"""
     if not style_str: return ''
-    match = re.search(r'url\(&quot;(.*?)&quot;\)', style_str)
-    if not match:
-        match = re.search(r'url\("(.*?)"\)', style_str)
-    if not match:
-        match = re.search(r'url\((.*?)\)', style_str)
-    return match.group(1) if match else ''
+    
+    # تنظيف النص من رموز HTML مثل &quot;
+    clean_style = style_str.replace('&quot;', '"').replace("&#39;", "'")
+    
+    # البحث عن الرابط
+    match = re.search(r'url\s*\((.*?)\)', clean_style, re.IGNORECASE)
+    if match:
+        url = match.group(1).strip()
+        # إزالة علامات التنصيص إذا وجدت
+        url = url.strip('"\'')
+        return url
+    return ''
+
+def is_valid_tag(text):
+    """التحقق مما إذا كان النص تصنيفاً صالحاً أم مجرد رقم أو إحصائية"""
+    text = text.strip()
+    if not text: return False
+    
+    # استبعاد الكلمات المحجوزة
+    if text in ['مكتملة', 'متوقفة', 'مستمرة', 'مترجمة', 'رواية', 'عمل']: return False
+    
+    # استبعاد الأرقام (مثل 1,824 أو 101)
+    # إزالة الفواصل والرموز للتحقق
+    clean_text = text.replace(',', '').replace('.', '').replace('x', '').strip()
+    if clean_text.isdigit(): return False
+    
+    # استبعاد الصيغ مثل "101 x"
+    if re.search(r'^\d+\s*x$', text, re.IGNORECASE): return False 
+    
+    # يجب أن يحتوي على حروف عربية ليكون تصنيفاً
+    if not re.search(r'[\u0600-\u06FF]', text): return False
+    
+    return True
 
 def fetch_novel_metadata_html(url):
     """جلب معلومات الرواية من HTML الصفحة مباشرة"""
@@ -58,32 +84,60 @@ def fetch_novel_metadata_html(url):
         title_tag = soup.find('h1')
         title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
         
-        # 2. Cover
+        # 2. Cover (Enhanced Logic)
         cover_url = ""
+        
+        # محاولة 1: البحث في meta og:image (الأكثر دقة)
         og_image = soup.find("meta", property="og:image")
-        if og_image:
+        if og_image and og_image.get("content"):
             cover_url = og_image["content"]
-        else:
+        
+        # محاولة 2: البحث في الخلفية CSS
+        if not cover_url:
             img_div = soup.find('div', class_='v-image__image--cover')
             if img_div and img_div.has_attr('style'):
                 cover_url = extract_background_image(img_div['style'])
-            
+        
+        # إصلاح الرابط النسبي
+        if cover_url and not cover_url.startswith('http'):
+            if cover_url.startswith('//'):
+                cover_url = 'https:' + cover_url
+            elif cover_url.startswith('/'):
+                base_url = 'https://rewayat.club' # أو استخلاص النطاق من الرابط الأصلي
+                cover_url = base_url + cover_url
+
         # 3. Description
         desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
         description = desc_div.get_text(strip=True) if desc_div else ""
         
-        # 4. Status & Category
+        # 4. Status & Category (مع الفلترة الجديدة)
         status = "مستمرة"
         tags = []
         category = "عام"
         
-        chips = soup.find_all(class_='v-chip__content')
-        for chip in chips:
+        # البحث فقط داخل القسم العلوي لتجنب فصول القائمة
+        # عادة التصنيفات تكون في v-chip-group في الأعلى
+        chip_groups = soup.find_all(class_='v-chip-group')
+        
+        target_chips = []
+        if chip_groups:
+            # نأخذ المجموعات العلوية فقط (عادة الأولى أو الثانية)
+            for group in chip_groups[:2]:
+                target_chips.extend(group.find_all(class_='v-chip__content'))
+        else:
+            # fallback
+            target_chips = soup.find_all(class_='v-chip__content')
+
+        for chip in target_chips:
             text = chip.get_text(strip=True)
+            
             if text in ['مكتملة', 'متوقفة', 'مستمرة']:
                 status = text
-            elif text not in ['مترجمة', 'رواية']: 
+            elif is_valid_tag(text):
                 tags.append(text)
+        
+        # إزالة التكرار
+        tags = list(set(tags))
         
         if tags:
             category = tags[0]
@@ -95,6 +149,7 @@ def fetch_novel_metadata_html(url):
         if chapter_match:
             total_chapters = int(chapter_match.group(1))
         else:
+            # البحث في التبويبات
             tabs = soup.find_all(class_='v-tab')
             for tab in tabs:
                 tab_text = tab.get_text(strip=True)
@@ -182,14 +237,12 @@ def background_worker(url, admin_email, author_name):
     metadata = fetch_novel_metadata_html(url)
     if not metadata:
         print("❌ Failed to fetch metadata")
-        # Send error log to backend
-        send_data_to_backend({'adminEmail': admin_email, 'error': 'فشل في جلب بيانات الرواية من المصدر'})
+        send_data_to_backend({'adminEmail': admin_email, 'error': 'فشل في جلب بيانات الرواية (تأكد من الرابط)'})
         return
 
     print(f"📖 Found Novel: {metadata['title']} ({metadata['total_chapters']} Chapters)")
 
     # 2. إرسال البيانات الوصفية أولاً لإنشاء الرواية ورفع الصورة في الخادم
-    # نرسل chapters فارغة لإنشاء الرواية فقط
     init_payload = {
         'adminEmail': admin_email,
         'novelData': metadata,
@@ -203,9 +256,9 @@ def background_worker(url, admin_email, author_name):
     # 3. حلقة سحب الفصول وإرسالها على دفعات (Batches)
     total = metadata['total_chapters']
     if total == 0:
-        total = 50 # Fallback default
+        total = 50 
         
-    batch_size = 5 # إرسال كل 5 فصول دفعة واحدة لتخفيف الحمل وتسريع الاستجابة
+    batch_size = 5 
     current_batch = []
 
     for num in range(1, total + 1):
@@ -222,21 +275,19 @@ def background_worker(url, admin_email, author_name):
         else:
             print(f"⚠️ Failed to scrape content for Ch {num}")
 
-        # إذا اكتملت الدفعة أو وصلنا للنهاية
         if len(current_batch) >= batch_size or num == total:
             if current_batch:
                 print(f"📤 Sending batch of {len(current_batch)} chapters...")
                 payload = {
                     'adminEmail': admin_email,
-                    'novelData': metadata, # نرسل الميتاداتا دائماً للتأكيد
+                    'novelData': metadata, 
                     'chapters': current_batch
                 }
                 send_data_to_backend(payload)
-                current_batch = [] # تصفير الدفعة
-                time.sleep(1) # استراحة بسيطة
+                current_batch = [] 
+                time.sleep(1) 
 
     print("✨ Scraping Task Completed Successfully!")
-    # إرسال إشعار اكتمال (اختياري، الخادم سيعرف من التحديثات)
 
 # ==========================================
 # نقاط النهاية (Endpoints)
