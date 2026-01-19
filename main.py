@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -22,7 +23,7 @@ API_SECRET = os.environ.get('API_SECRET', 'Zeusndndjddnejdjdjdejekk29393838msmsk
 NODE_BACKEND_URL = os.environ.get('NODE_BACKEND_URL', 'https://c-production-3db6.up.railway.app')
 
 # ==========================================
-# أدوات السحب (Scraper Tools)
+# أدوات السحب المشتركة (Shared Scraper Tools)
 # ==========================================
 
 def get_headers():
@@ -32,181 +33,26 @@ def get_headers():
         'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
     }
 
-def extract_from_nuxt(soup):
-    """استخراج رابط الصورة من بيانات Nuxt الخام"""
-    try:
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string and 'window.__NUXT__' in script.string:
-                content = script.string
-                match = re.search(r'poster_url:"(.*?)"', content)
-                if not match:
-                    match = re.search(r'poster:"(.*?)"', content)
-                
-                if match:
-                    raw_url = match.group(1)
-                    clean_url = raw_url.encode('utf-8').decode('unicode_escape')
-                    return clean_url
-    except Exception as e:
-        print(f"Error extracting from Nuxt: {e}")
-    return None
-
-def extract_background_image(style_str):
-    if not style_str: return ''
-    clean_style = style_str.replace('&quot;', '"').replace("&#39;", "'")
-    match = re.search(r'url\s*\((.*?)\)', clean_style, re.IGNORECASE)
-    if match:
-        url = match.group(1).strip()
-        url = url.strip('"\'')
-        return url
-    return ''
-
-def is_valid_tag(text):
-    text = text.strip()
-    if not text: return False
-    if text in ['مكتملة', 'متوقفة', 'مستمرة', 'مترجمة', 'رواية', 'عمل']: return False
-    clean_text = text.replace(',', '').replace('.', '').replace('x', '').strip()
-    if clean_text.isdigit(): return False
-    if re.search(r'^\d+\s*x$', text, re.IGNORECASE): return False 
-    if not re.search(r'[\u0600-\u06FF]', text): return False
-    return True
-
-def fix_image_url(url):
+def fix_image_url(url, base_url='https://api.rewayat.club'):
     if not url: return ""
-    base_api_url = 'https://api.rewayat.club'
     if url.startswith('//'):
         return 'https:' + url
     elif url.startswith('/'):
-        return base_api_url + url
+        return base_url + url
     elif not url.startswith('http'):
-        return base_api_url + '/' + url
+        return base_url + '/' + url
     return url
 
-def fetch_novel_metadata_html(url):
-    """جلب معلومات الرواية"""
+def send_data_to_backend(payload):
+    """إرسال البيانات إلى الخادم الرئيسي"""
     try:
-        print(f"📡 Fetching metadata from HTML: {url}")
-        response = requests.get(url, headers=get_headers(), timeout=15)
-        if response.status_code != 200:
-            print(f"❌ HTTP Error: {response.status_code}")
-            return None
-            
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Title
-        title_tag = soup.find('h1')
-        title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
-        
-        # Cover
-        cover_url = ""
-        nuxt_image = extract_from_nuxt(soup)
-        if nuxt_image: cover_url = nuxt_image
-        
-        if not cover_url:
-            og_image = soup.find("meta", property="og:image")
-            if og_image and og_image.get("content"): cover_url = og_image["content"]
-        
-        if not cover_url:
-            img_div = soup.find('div', class_='v-image__image--cover')
-            if img_div and img_div.has_attr('style'): cover_url = extract_background_image(img_div['style'])
-        
-        cover_url = fix_image_url(cover_url)
-
-        # Description
-        desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
-        description = desc_div.get_text(strip=True) if desc_div else ""
-        
-        # Status & Category
-        status = "مستمرة"
-        tags = []
-        category = "عام"
-        
-        chip_groups = soup.find_all(class_='v-chip-group')
-        target_chips = []
-        if chip_groups:
-            for group in chip_groups[:2]: 
-                target_chips.extend(group.find_all(class_='v-chip__content'))
-        else:
-            target_chips = soup.find_all(class_='v-chip__content')
-
-        for chip in target_chips:
-            text = chip.get_text(strip=True)
-            if text in ['مكتملة', 'متوقفة', 'مستمرة']:
-                status = text
-            elif is_valid_tag(text):
-                tags.append(text)
-        
-        tags = list(set(tags))
-        if tags: category = tags[0]
-
-        # Total Chapters (تقريبي)
-        total_chapters = 0
-        all_text = soup.get_text()
-        chapter_match = re.search(r'الفصول\s*\((\d+)\)', all_text)
-        if chapter_match:
-            total_chapters = int(chapter_match.group(1))
-        
-        if total_chapters == 0:
-            tabs = soup.find_all(class_='v-tab')
-            for tab in tabs:
-                if "الفصول" in tab.get_text():
-                    match = re.search(r'(\d+)', tab.get_text())
-                    if match: total_chapters = int(match.group(1))
-
-        return {
-            'title': title,
-            'description': description,
-            'cover': cover_url,
-            'status': status,
-            'tags': tags,
-            'category': category,
-            'total_chapters': total_chapters
-        }
-
+        endpoint = f"{NODE_BACKEND_URL}/api/scraper/receive"
+        headers = { 'Content-Type': 'application/json', 'Authorization': API_SECRET, 'x-api-secret': API_SECRET }
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        return response.status_code == 200
     except Exception as e:
-        print(f"❌ Error scraping metadata: {e}")
-        return None
-
-def scrape_chapter_content_html(novel_url, chapter_num):
-    """سحب نص الفصل"""
-    url = f"{novel_url.rstrip('/')}/{chapter_num}"
-    try:
-        response = requests.get(url, headers=get_headers(), timeout=10)
-        if response.status_code != 200:
-            return None, None
-            
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        paragraphs = soup.find_all('p')
-        
-        # === تم التعديل هنا: إزالة شرط الطول (> 20) لسحب كل شيء ===
-        # الآن نتحقق فقط من أن الفقرة ليست فارغة تماماً
-        clean_paragraphs = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
-        
-        if clean_paragraphs:
-            text_content = "\n\n".join(clean_paragraphs)
-        else:
-            # محاولة بديلة إذا لم تكن هناك وسوم <p>
-            content_div = soup.find('div', class_='pre-formatted') or soup.find('div', class_='v-card__text')
-            if content_div:
-                text_content = content_div.get_text(separator="\n\n", strip=True)
-            else:
-                return None, None
-            
-        # === تم التعديل هنا: تخفيف شرط الحد الأدنى لطول الفصل ===
-        # كان < 50 سابقاً، جعلناه < 2 ليسمح بالفصول القصيرة جداً أو الملاحظات
-        if len(text_content.strip()) < 2:
-            return None, None
-
-        title_tag = soup.find(class_='v-card__subtitle') or soup.find('h1')
-        title = title_tag.get_text(strip=True) if title_tag else f"الفصل {chapter_num}"
-        title = re.sub(r'^\d+\s*-\s*', '', title)
-
-        return title, text_content
-            
-    except Exception as e:
-        print(f"Error scraping chapter {chapter_num}: {e}")
-        return None, None
+        print(f"❌ Failed to send data: {e}")
+        return False
 
 def check_existing_chapters(title):
     """التحقق من الفصول الموجودة في الباك إند"""
@@ -226,142 +72,304 @@ def check_existing_chapters(title):
         print(f"❌ Error checking existence: {e}")
         return []
 
-def send_data_to_backend(payload):
-    """إرسال البيانات إلى الخادم الرئيسي"""
+# ==========================================
+# 🟣 1. Rewayat Club (Nuxt) Logic - Probe Mode
+# ==========================================
+
+def extract_from_nuxt(soup):
     try:
-        endpoint = f"{NODE_BACKEND_URL}/api/scraper/receive"
-        headers = { 'Content-Type': 'application/json', 'Authorization': API_SECRET, 'x-api-secret': API_SECRET }
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
-        return response.status_code == 200
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and 'window.__NUXT__' in script.string:
+                content = script.string
+                match = re.search(r'poster_url:"(.*?)"', content)
+                if not match: match = re.search(r'poster:"(.*?)"', content)
+                if match:
+                    raw_url = match.group(1)
+                    return raw_url.encode('utf-8').decode('unicode_escape')
+    except: pass
+    return None
+
+def fetch_metadata_rewayat(url):
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200: return None
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        title_tag = soup.find('h1')
+        title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
+        
+        cover_url = extract_from_nuxt(soup) or ""
+        if not cover_url:
+            og_image = soup.find("meta", property="og:image")
+            if og_image: cover_url = og_image["content"]
+        cover_url = fix_image_url(cover_url)
+
+        desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
+        description = desc_div.get_text(strip=True) if desc_div else ""
+        
+        return {
+            'title': title, 'description': description, 'cover': cover_url,
+            'status': "مستمرة", 'category': "عام", 'tags': []
+        }
     except Exception as e:
-        print(f"❌ Failed to send data: {e}")
-        return False
+        print(f"Error rewayat metadata: {e}")
+        return None
 
-# ==========================================
-# دالة الخلفية (تم تعديلها لتعمل بوضع Probe Mode)
-# ==========================================
-def background_worker(url, admin_email, author_name, start_from=1, update_info=True):
-    print(f"🚀 Starting Scraper for: {url}")
-    
-    # 1. الميتاداتا
-    metadata = fetch_novel_metadata_html(url)
-    if not metadata:
-        send_data_to_backend({'adminEmail': admin_email, 'error': 'فشل في جلب بيانات الرواية'})
-        return
+def scrape_chapter_rewayat(novel_url, chapter_num):
+    url = f"{novel_url.rstrip('/')}/{chapter_num}"
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=10)
+        if response.status_code != 200: return None, None
+        soup = BeautifulSoup(response.content, 'html.parser')
+        paragraphs = soup.find_all('p')
+        clean_paragraphs = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+        if clean_paragraphs:
+            text = "\n\n".join(clean_paragraphs)
+        else:
+            div = soup.find('div', class_='pre-formatted') or soup.find('div', class_='v-card__text')
+            text = div.get_text(separator="\n\n", strip=True) if div else ""
+        
+        if len(text.strip()) < 2: return None, None
+        
+        title_tag = soup.find(class_='v-card__subtitle') or soup.find('h1')
+        title = title_tag.get_text(strip=True) if title_tag else f"الفصل {chapter_num}"
+        title = re.sub(r'^\d+\s*-\s*', '', title)
+        return title, text
+    except: return None, None
 
-    print(f"📖 Found Novel: {metadata['title']} (Site says approx: {metadata['total_chapters']} Chaps)")
-
-    # 2. المصافحة الذكية
+def worker_rewayat_probe(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
-    skip_metadata_update = False
+    skip_meta = len(existing_chapters) > 0
     
-    max_existing = 0
-    if len(existing_chapters) > 0:
-        max_existing = max(existing_chapters)
-        print(f"ℹ️ Novel exists locally with {len(existing_chapters)} chapters. Max ID: {max_existing}")
-        skip_metadata_update = True
-    else:
-        # إرسال البيانات الأولية إذا كانت جديدة كلياً
-        if not send_data_to_backend({
-            'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False
-        }): return
+    if not skip_meta:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
 
-    # 3. حلقة السحب الذكية (While Loop for Probing)
-    # لا نعتمد على range ثابت، بل نستمر حتى نصل لحد الأخطاء المتتالية
+    current_chapter = 1
+    errors = 0
+    batch = []
     
-    current_chapter = start_from
-    consecutive_errors = 0
-    MAX_CONSECUTIVE_ERRORS = 15 # سيتوقف بعد 15 محاولة فاشلة متتالية (للتأكد من عدم وجود فصول جديدة)
-    
-    # حد أقصى للأمان لمنع الحلقات اللانهائية في حال تعطل الموقع
-    SAFETY_LIMIT = 5000 
-    
-    batch_size = 5 
-    current_batch = []
-    
-    print(f"🕵️‍♂️ Starting PROBE MODE from chapter {current_chapter}...")
-
-    while current_chapter < SAFETY_LIMIT:
-        
-        # أ) إذا كان الفصل موجوداً مسبقاً
+    while current_chapter < 5000 and errors < 15:
         if current_chapter in existing_chapters:
-            # نتخطى الفصل، لكن نصفر عداد الأخطاء لأن التسلسل صحيح وموجود
-            consecutive_errors = 0
-            if current_chapter % 50 == 0:
-                print(f"⏩ Skipped existing chapter {current_chapter}...")
             current_chapter += 1
+            errors = 0
             continue
+            
+        chap_title, content = scrape_chapter_rewayat(url, current_chapter)
+        if content:
+            errors = 0
+            batch.append({'number': current_chapter, 'title': chap_title, 'content': content})
+            print(f"Fetched Ch {current_chapter}")
+            if len(batch) >= 5:
+                send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+                batch = []
+                time.sleep(1)
+        else:
+            errors += 1
+            print(f"Failed Ch {current_chapter} ({errors}/15)")
+        current_chapter += 1
         
-        # ب) الفصل غير موجود، نحاول سحبه
-        chap_title, content = scrape_chapter_content_html(url, current_chapter)
+    if batch:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+
+# ==========================================
+# 🟢 2. Ar Novel (Madara) Logic - List Mode
+# ==========================================
+
+def fetch_metadata_madara(url):
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200: return None
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Title
+        title_tag = soup.find(class_='post-title')
+        title = title_tag.find('h1').get_text(strip=True) if title_tag else "Unknown"
+        title = re.sub(r'\s*~.*$', '', title) # Remove "~ Ar Novel" suffix if present
+
+        # Cover
+        img_tag = soup.find(class_='summary_image').find('img')
+        cover = img_tag.get('src') if img_tag else ""
+        if not cover:
+            og_img = soup.find("meta", property="og:image")
+            if og_img: cover = og_img["content"]
+
+        # ID for AJAX
+        novel_id = None
+        id_input = soup.find('input', class_='rating-post-id')
+        if id_input: novel_id = id_input.get('value')
+        else:
+            div_id = soup.find('div', id='manga-chapters-holder')
+            if div_id: novel_id = div_id.get('data-id')
+        
+        # Description
+        desc_div = soup.find(class_='summary__content') or soup.find(class_='description-summary')
+        description = desc_div.get_text(separator="\n", strip=True) if desc_div else ""
+
+        # Tags/Category
+        genres_content = soup.find(class_='genres-content')
+        category = "عام"
+        tags = []
+        if genres_content:
+            links = genres_content.find_all('a')
+            tags = [a.get_text(strip=True) for a in links]
+            if tags: category = tags[0]
+
+        return {
+            'title': title, 'description': description, 'cover': cover,
+            'status': 'مستمرة', 'category': category, 'tags': tags,
+            'novel_id': novel_id
+        }
+    except Exception as e:
+        print(f"Error Madara Meta: {e}")
+        return None
+
+def fetch_chapter_list_madara(novel_id):
+    """Get all chapters via AJAX"""
+    if not novel_id: return []
+    try:
+        ajax_url = "https://ar-no.com/wp-admin/admin-ajax.php"
+        data = {'action': 'manga_get_chapters', 'manga': novel_id}
+        res = requests.post(ajax_url, data=data, headers=get_headers())
+        if res.status_code != 200: return []
+        
+        soup = BeautifulSoup(res.content, 'html.parser')
+        chapters = []
+        
+        # Madara lists items: <li class="wp-manga-chapter"> <a href="url"> Title </a> </li>
+        # Usually ordered Newest -> Oldest. We want Oldest -> Newest.
+        
+        items = soup.find_all('li', class_='wp-manga-chapter')
+        for item in items:
+            a = item.find('a')
+            if a:
+                link = a.get('href')
+                raw_title = a.get_text(strip=True)
+                
+                # Extract number
+                # Titles like: "347 - Name" or "Chapter 10"
+                num_match = re.search(r'(\d+)', raw_title)
+                number = int(num_match.group(1)) if num_match else 0
+                
+                # Clean title
+                clean_title = re.sub(r'^\d+\s*[-–]\s*', '', raw_title).strip()
+                
+                if number > 0:
+                    chapters.append({'number': number, 'url': link, 'title': clean_title})
+        
+        # Sort by number ascending
+        chapters.sort(key=lambda x: x['number'])
+        return chapters
+    except Exception as e:
+        print(f"Error fetching chapter list: {e}")
+        return []
+
+def scrape_chapter_madara(url):
+    try:
+        res = requests.get(url, headers=get_headers(), timeout=15)
+        if res.status_code != 200: return None
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        # Content is usually in .text-left within .reading-content
+        container = soup.find(class_='text-left')
+        if not container: container = soup.find(class_='entry-content')
+        
+        # Remove ads
+        for bad in container.find_all(['div', 'script'], class_=['code-block', 'adsbygoogle']):
+            bad.decompose()
+            
+        text = container.get_text(separator="\n\n", strip=True)
+        # Fix double newlines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        return text
+    except: return None
+
+def worker_madara_list(url, admin_email, metadata):
+    # 1. Check Backend
+    existing_chapters = check_existing_chapters(metadata['title'])
+    skip_meta = len(existing_chapters) > 0
+    
+    if not skip_meta:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+
+    # 2. Get Full List
+    print(f"📋 Fetching full chapter list for ID: {metadata['novel_id']}")
+    all_chapters = fetch_chapter_list_madara(metadata['novel_id'])
+    print(f"📋 Found {len(all_chapters)} chapters on source.")
+    
+    batch = []
+    
+    # 3. Iterate (Skip existing)
+    for chap in all_chapters:
+        if chap['number'] in existing_chapters:
+            continue
+            
+        print(f"📥 Scraping Ar-Novel Ch {chap['number']}...")
+        content = scrape_chapter_madara(chap['url'])
         
         if content:
-            # نجاح!
-            consecutive_errors = 0 # تصفير العداد
+            batch.append({
+                'number': chap['number'],
+                'title': chap['title'],
+                'content': content
+            })
             
-            chapter_data = {'number': current_chapter, 'title': chap_title, 'content': content}
-            current_batch.append(chapter_data)
-            print(f"📄 Scraped NEW Chapter {current_chapter}")
-            
-            # إرسال الدفعة
-            if len(current_batch) >= batch_size:
-                print(f"📤 Sending batch of {len(current_batch)}...")
-                send_data_to_backend({
-                    'adminEmail': admin_email, 'novelData': metadata, 'chapters': current_batch, 'skipMetadataUpdate': skip_metadata_update
-                })
-                current_batch = [] 
-                time.sleep(1) 
+            if len(batch) >= 5:
+                send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+                print(f"📤 Sent {len(batch)} chapters.")
+                batch = []
+                time.sleep(1) # Be gentle
         else:
-            # فشل (404 أو محتوى فارغ)
-            consecutive_errors += 1
-            print(f"⚠️ Failed/Empty Ch {current_chapter} (Error {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})")
+            print(f"⚠️ Failed content for Ch {chap['number']}")
             
-            # شرط التوقف الحاسم
-            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                print(f"🛑 Reached {MAX_CONSECUTIVE_ERRORS} consecutive errors at chapter {current_chapter}. Stopping probe.")
-                break
-        
-        current_chapter += 1
-
-    # إرسال ما تبقى في الدفعة الأخيرة
-    if len(current_batch) > 0:
-        send_data_to_backend({
-            'adminEmail': admin_email, 'novelData': metadata, 'chapters': current_batch, 'skipMetadataUpdate': skip_metadata_update
-        })
-
-    print(f"✨ Scraping Task Completed! Scanned up to {current_chapter}")
+    if batch:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+        print(f"📤 Sent final batch.")
 
 # ==========================================
-# نقاط النهاية (Endpoints)
+# Main Orchestrator
 # ==========================================
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "ZEUS Scraper Service (Probe Mode Active 🕵️‍♂️) is Running ⚡", 200
+    return "ZEUS Scraper Service (Multi-Site Supported ⚡) is Running", 200
 
 @app.route('/scrape', methods=['POST'])
 def trigger_scrape():
     auth_header = request.headers.get('Authorization')
-    if auth_header != API_SECRET:
-        return jsonify({'message': 'Unauthorized'}), 401
+    if auth_header != API_SECRET: return jsonify({'message': 'Unauthorized'}), 401
 
     data = request.json
-    if not data:
-        return jsonify({'message': 'No data provided'}), 400
-        
-    url = data.get('url')
+    url = data.get('url', '')
     admin_email = data.get('adminEmail')
-    author_name = data.get('authorName', 'ZEUS Bot')
-    start_from = int(data.get('startFrom', 1))
+    
+    if not url: return jsonify({'message': 'No URL'}), 400
 
-    if not url or 'rewayat.club' not in url:
-        return jsonify({'message': 'Invalid URL'}), 400
+    # Dispatcher
+    if 'rewayat.club' in url:
+        meta = fetch_metadata_rewayat(url)
+        if not meta: return jsonify({'message': 'Failed metadata', 'error': 'Could not fetch metadata'}), 400
+        
+        thread = threading.Thread(target=worker_rewayat_probe, args=(url, admin_email, meta))
+        thread.daemon = True
+        thread.start()
+        return jsonify({'message': 'Started Rewayat Probe', 'status': 'started'}), 200
+        
+    elif 'ar-no.com' in url:
+        meta = fetch_metadata_madara(url)
+        if not meta: return jsonify({'message': 'Failed metadata', 'error': 'Could not fetch metadata from Ar-Novel'}), 400
+        
+        if not meta['novel_id']:
+             return jsonify({'message': 'Failed ID', 'error': 'Could not find Novel ID for AJAX'}), 400
 
-    thread = threading.Thread(target=background_worker, args=(url, admin_email, author_name, start_from))
-    thread.daemon = True 
-    thread.start()
+        thread = threading.Thread(target=worker_madara_list, args=(url, admin_email, meta))
+        thread.daemon = True
+        thread.start()
+        return jsonify({'message': 'Started Ar-Novel List Scraper', 'status': 'started'}), 200
 
-    return jsonify({'message': 'Started', 'status': 'started'}), 200
+    else:
+        return jsonify({'message': 'Unsupported Domain'}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
