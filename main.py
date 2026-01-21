@@ -241,9 +241,8 @@ def fetch_metadata_madara(url):
         return None
 
 def parse_madara_chapters_from_html(soup):
-    """تحليل الفصول من كود HTML (سواء من الصفحة الرئيسية أو من AJAX)"""
+    """تحليل الفصول من كود HTML"""
     chapters = []
-    # البحث عن عناصر الفصول القياسية في ثيم مادارا
     items = soup.find_all('li', class_='wp-manga-chapter')
     
     for item in items:
@@ -252,11 +251,11 @@ def parse_madara_chapters_from_html(soup):
             link = a.get('href')
             raw_title = a.get_text(strip=True)
             
-            # استخراج الرقم (أول عدد يظهر في العنوان)
+            # استخراج الرقم
             num_match = re.search(r'(\d+)', raw_title)
             number = int(num_match.group(1)) if num_match else 0
             
-            # تنظيف العنوان من الأرقام في البداية
+            # تنظيف العنوان
             clean_title = re.sub(r'^\d+\s*[-–]\s*', '', raw_title).strip()
             
             if number > 0:
@@ -265,13 +264,12 @@ def parse_madara_chapters_from_html(soup):
     return chapters
 
 def fetch_chapter_list_madara(novel_id, novel_url=None):
-    """جلب قائمة الفصول بالكامل باستخدام AJAX أو التحليل المباشر"""
+    """جلب قائمة الفصول بالكامل مع الترتيب التصاعدي"""
     chapters = []
     
-    # محاولة 1: جلب الفصول عبر رابط AJAX الخاص بالثيم (الأكثر ضماناً)
+    # محاولة 1: AJAX
     if novel_url:
         ajax_endpoint = f"{novel_url.rstrip('/')}/ajax/chapters/"
-        print(f"📋 Trying Madara AJAX endpoint: {ajax_endpoint}")
         try:
             headers = get_headers()
             headers['X-Requested-With'] = 'XMLHttpRequest'
@@ -279,13 +277,10 @@ def fetch_chapter_list_madara(novel_id, novel_url=None):
             if res.status_code == 200:
                 soup = BeautifulSoup(res.content, 'html.parser')
                 chapters = parse_madara_chapters_from_html(soup)
-                if chapters:
-                    print(f"✅ Found {len(chapters)} chapters via AJAX.")
-                    return chapters
         except Exception as e:
             print(f"⚠️ AJAX endpoint failed: {e}")
 
-    # محاولة 2: محاولة admin-ajax.php التقليدية
+    # محاولة 2: admin-ajax
     if not chapters and novel_id:
         try:
             ajax_url = "https://ar-no.com/wp-admin/admin-ajax.php"
@@ -294,10 +289,9 @@ def fetch_chapter_list_madara(novel_id, novel_url=None):
             if res.status_code == 200:
                 soup = BeautifulSoup(res.content, 'html.parser')
                 chapters = parse_madara_chapters_from_html(soup)
-        except Exception as e:
-            print(f"Error admin-ajax: {e}")
+        except: pass
             
-    # ترتيب الفصول تصاعدياً
+    # ✅ التعديل الجوهري: ترتيب الفصول من 1 فما فوق لضمان البدء من البداية
     if chapters:
         chapters.sort(key=lambda x: x['number'])
     
@@ -309,50 +303,40 @@ def scrape_chapter_madara(url):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, 'html.parser')
         
-        # محاولة إيجاد الحاوية النصية بأكثر من احتمال
         container = soup.find(class_='text-left') or soup.find(class_='reading-content') or soup.find(class_='entry-content')
             
         if container:
-            # تنظيف الإعلانات والسكريبتات
             for bad in container.find_all(['div', 'script', 'style', 'input', 'ins', 'iframe']):
                 if bad.get('class') and any(c in ['code-block', 'adsbygoogle', 'pf-ad'] for c in bad.get('class')):
                     bad.decompose()
             
-            # إزالة أزرار التنقل (السابق والتالي) إذا كانت داخل المحتوى
             for nav in container.find_all('div', class_='nav-links'):
                 nav.decompose()
 
             text = container.get_text(separator="\n\n", strip=True)
-            
-            # تنظيف النصوص المتكررة
             text = re.sub(r'\n{3,}', '\n\n', text)
             text = text.replace('اكمال القراءة', '')
-            
             return text
-        
         return None
     except: return None
 
 def worker_madara_list(url, admin_email, metadata):
-    # 1. التحقق من الباك إند
     existing_chapters = check_existing_chapters(metadata['title'])
     skip_meta = len(existing_chapters) > 0
     
     if not skip_meta:
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
 
-    # 2. جلب القائمة الكاملة
     all_chapters = fetch_chapter_list_madara(metadata.get('novel_id'), url)
     
     if not all_chapters:
         print(f"⚠️ No chapters found for {metadata['title']}")
         return
 
-    print(f"📋 Processing {len(all_chapters)} chapters.")
+    # الترتيب تم بالفعل في الدالة السابقة
+    print(f"📋 Processing {len(all_chapters)} chapters (Sorted Ascending).")
     
     batch = []
-    
-    # 3. السحب والدفع
     for chap in all_chapters:
         if chap['number'] in existing_chapters:
             continue
@@ -370,11 +354,10 @@ def worker_madara_list(url, admin_email, metadata):
             if len(batch) >= 5:
                 send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
                 batch = []
-                time.sleep(1.2) # تأخير لتجنب الحظر
+                time.sleep(1.2)
         
     if batch:
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
-        print(f"📤 Final batch sent.")
 
 # ==========================================
 # Main Orchestrator
@@ -395,7 +378,6 @@ def trigger_scrape():
     
     if not url: return jsonify({'message': 'No URL'}), 400
 
-    # توجيه الطلب حسب الدومين
     if 'rewayat.club' in url:
         meta = fetch_metadata_rewayat(url)
         if not meta: return jsonify({'message': 'Failed metadata'}), 400
