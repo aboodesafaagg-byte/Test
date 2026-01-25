@@ -120,7 +120,7 @@ def fetch_metadata_rewayat(url):
         cover_url = fix_image_url(cover_url)
 
         desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
-        description = desc_div.get_text(strip=True) if desc_div else ""
+        description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
         
         return {
             'title': title, 'description': description, 'cover': cover_url,
@@ -250,9 +250,15 @@ def fetch_metadata_madara(url):
 
         print(f"Found Novel ID: {novel_id}")
 
-        # 4. الوصف
+        # 4. الوصف (تم التعديل هنا لضمان وجود فواصل فقرات)
         desc_div = soup.find(class_='summary__content') or soup.find(class_='description-summary')
-        description = desc_div.get_text(separator="\n", strip=True) if desc_div else ""
+        if desc_div:
+            # استخدام separator="\n\n" لضمان فصل الفقرات بشكل واضح
+            description = desc_div.get_text(separator="\n\n", strip=True)
+            # إزالة التكرار الزائد للأسطر إن وجد
+            description = re.sub(r'\n{3,}', '\n\n', description)
+        else:
+            description = ""
 
         # 5. التصنيفات
         genres_content = soup.find(class_='genres-content')
