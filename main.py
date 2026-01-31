@@ -25,7 +25,6 @@ NODE_BACKEND_URL = os.environ.get('NODE_BACKEND_URL', 'https://c-production-3db6
 # ==========================================
 # 🍪 إعدادات الكوكيز (تجاوز حماية تسجيل الدخول)
 # ==========================================
-# تم تحديث القيمة بناءً على لقطة الشاشة والبيانات التي زودتنا بها
 MARKAZ_COOKIES = 'wordpress_logged_in_198f6e9e82ba200a53325105f201ddc5=53a8cc0077488fb5a321840b4e1f18e7%7C1770510651%7CZmUj9XvN1Cem8SZvUhUfgdlhjnaNrDJEG5fx8iqM53y%7C24bb480a43ebe89e75de989f9afd0f4846079186c93e064185de2a015e37df0f'
 
 # ==========================================
@@ -41,7 +40,6 @@ def get_headers(referer=None, use_cookies=False):
     if referer:
         headers['Referer'] = referer
     
-    # إضافة الكوكيز إذا كان الموقع يتطلب ذلك (مركز الروايات)
     if use_cookies and MARKAZ_COOKIES and MARKAZ_COOKIES != 'ضع_هنا_الكوكيز_الخاصة_بك_كاملة':
         headers['Cookie'] = MARKAZ_COOKIES
         
@@ -52,6 +50,9 @@ def fix_image_url(url, base_url='https://api.rewayat.club'):
     if url.startswith('//'):
         return 'https:' + url
     elif url.startswith('/'):
+        # إذا كان الموقع هو novelfire نستخدم الدومين الخاص به
+        if 'novelfire.net' in base_url:
+            return 'https://novelfire.net' + url
         return base_url + url
     elif not url.startswith('http'):
         return base_url + '/' + url
@@ -78,7 +79,7 @@ def check_existing_chapters(title):
         if response.status_code == 200:
             data = response.json()
             if data.get('exists'):
-                return data['chapters'] # يعيد مصفوفة بالأرقام
+                return data['chapters']
             else:
                 return []
         return []
@@ -87,7 +88,7 @@ def check_existing_chapters(title):
         return []
 
 # ==========================================
-# 🟣 1. Rewayat Club (Nuxt) Logic - Probe Mode
+# 🟣 1. Rewayat Club (Nuxt) Logic
 # ==========================================
 
 def extract_from_nuxt(soup):
@@ -187,49 +188,39 @@ def worker_rewayat_probe(url, admin_email, metadata):
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
 
 # ==========================================
-# 🟢 2. Madara Themes (Ar-Novel & Markaz Riwayat) - List Mode
+# 🟢 2. Madara Themes (Ar-Novel & Markaz Riwayat)
 # ==========================================
 
 def get_base_url(url):
-    """استخراج الرابط الأساسي (البروتوكول + الدومين)"""
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
 def fetch_metadata_madara(url):
     try:
-        # تفعيل الكوكيز لمركز الروايات لتجاوز الحماية حتى في صفحة المعلومات
         use_cookies = 'markazriwayat.com' in url
         response = requests.get(url, headers=get_headers(use_cookies=use_cookies), timeout=15)
         
         if response.status_code != 200: return None
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # 1. استخراج العنوان
         title_tag = soup.find(class_='post-title')
         title = title_tag.find('h1').get_text(strip=True) if title_tag else "Unknown"
         title = re.sub(r'\s*~.*$', '', title) 
 
-        # 2. استخراج الغلاف (تصحيح مشكلة الصورة البيضاء)
         cover = ""
-        
-        # الأولوية الأولى: البحث عن صورة الميتا (لأنها دائماً الرابط الأصلي وبجودة عالية)
         og_img = soup.find("meta", property="og:image")
         if og_img: 
             cover = og_img["content"]
         
-        # الأولوية الثانية: البحث داخل عنصر الصورة مع مراعاة Lazy Load
         if not cover:
             img_container = soup.find(class_='summary_image')
             if img_container:
                 img_tag = img_container.find('img')
                 if img_tag:
-                    # نأخذ data-src أولاً لأنه الرابط الحقيقي، ثم src
                     cover = img_tag.get('data-src') or img_tag.get('src') or img_tag.get('srcset', '').split(' ')[0]
 
-        # تنظيف رابط الصورة في حال كان نسبياً
         cover = fix_image_url(cover)
 
-        # 3. استخراج ID الرواية (هام لطلب AJAX)
         novel_id = None
         shortlink = soup.find("link", rel="shortlink")
         if shortlink:
@@ -250,17 +241,13 @@ def fetch_metadata_madara(url):
 
         print(f"Found Novel ID: {novel_id}")
 
-        # 4. الوصف (تم التعديل هنا لضمان وجود فواصل فقرات)
         desc_div = soup.find(class_='summary__content') or soup.find(class_='description-summary')
         if desc_div:
-            # استخدام separator="\n\n" لضمان فصل الفقرات بشكل واضح
             description = desc_div.get_text(separator="\n\n", strip=True)
-            # إزالة التكرار الزائد للأسطر إن وجد
             description = re.sub(r'\n{3,}', '\n\n', description)
         else:
             description = ""
 
-        # 5. التصنيفات
         genres_content = soup.find(class_='genres-content')
         category = "عام"
         tags = []
@@ -282,7 +269,6 @@ def fetch_metadata_markaz(url):
     return fetch_metadata_madara(url)
 
 def parse_madara_chapters_from_html(soup):
-    """تحليل الفصول من كود HTML"""
     chapters = []
     items = soup.find_all('li', class_='wp-manga-chapter')
     
@@ -291,12 +277,8 @@ def parse_madara_chapters_from_html(soup):
         if a:
             link = a.get('href')
             raw_title = a.get_text(strip=True)
-            
-            # استخراج الرقم
             num_match = re.search(r'(\d+)', raw_title)
             number = int(num_match.group(1)) if num_match else 0
-            
-            # تنظيف العنوان
             clean_title = re.sub(r'^\d+\s*[-–]\s*', '', raw_title).strip()
             
             if number > 0:
@@ -309,7 +291,6 @@ def fetch_chapter_list_madara(novel_id, novel_url):
     base_url = get_base_url(novel_url)
     use_cookies = 'markazriwayat.com' in novel_url
     
-    # محاولة 1: AJAX القياسي لمادارا
     if novel_url:
         ajax_endpoint = f"{novel_url.rstrip('/')}/ajax/chapters/"
         try:
@@ -323,7 +304,6 @@ def fetch_chapter_list_madara(novel_id, novel_url):
         except Exception as e:
             print(f"AJAX endpoint failed: {e}")
 
-    # محاولة 2: admin-ajax.php
     if not chapters and novel_id:
         try:
             admin_ajax_url = f"{base_url}/wp-admin/admin-ajax.php"
@@ -355,7 +335,6 @@ def scrape_chapter_madara(url):
                     soup.find(class_='entry-content')
             
         if container:
-            # تنظيف العناصر غير المرغوبة
             for bad in container.find_all(['div', 'script', 'style', 'input', 'ins', 'iframe', 'button']):
                 if bad.get('class') and any(c in ['nav-links', 'code-block', 'adsbygoogle', 'pf-ad', 'wpmcr-under-title-row'] for c in bad.get('class')):
                     bad.decompose()
@@ -370,7 +349,6 @@ def scrape_chapter_madara(url):
             text = text.replace('اكمال القراءة', '')
             text = text.replace('إعدادات القراءة', '') 
             
-            # إذا كان النص قصيراً جداً، قد يكون بسبب الحماية أو فشل الكوكيز
             if len(text) < 200 and 'سجل' in text:
                 print("⚠️ Warning: Chapter content seems blocked by login wall.")
                 
@@ -411,7 +389,143 @@ def worker_madara_list(url, admin_email, metadata):
             if len(batch) >= 5:
                 send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
                 batch = []
-                time.sleep(1.5) # زيادة التأخير قليلاً لتفادي كشف الكوكيز
+                time.sleep(1.5)
+        
+    if batch:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+
+# ==========================================
+# 🟠 3. Novel Fire (novelfire.net) Logic - New Addition
+# ==========================================
+
+def fetch_metadata_novelfire(url):
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200: return None
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # استخراج العنوان من og:title أو وسم h1
+        title_tag = soup.find("meta", property="og:title")
+        title = title_tag["content"] if title_tag else soup.find('h1').get_text(strip=True)
+        title = title.replace(' - Novel Fire', '').strip()
+
+        # استخراج الغلاف
+        cover = ""
+        og_img = soup.find("meta", property="og:image")
+        if og_img: cover = og_img["content"]
+        cover = fix_image_url(cover, base_url='https://novelfire.net')
+
+        # استخراج الوصف
+        desc_div = soup.find('div', class_='description') or soup.find('div', id='novel-summary')
+        description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
+
+        # التصنيفات
+        tags = []
+        genre_links = soup.select('.novel-genres a')
+        for link in genre_links:
+            tags.append(link.get_text(strip=True))
+        category = tags[0] if tags else "عام"
+
+        return {
+            'title': title, 'description': description, 'cover': cover,
+            'status': 'مستمرة', 'category': category, 'tags': tags
+        }
+    except Exception as e:
+        print(f"Error NovelFire Meta: {e}")
+        return None
+
+def fetch_chapter_list_novelfire(novel_url):
+    """جلب قائمة الفصول من صفحة الفصول الخاصة بـ Novel Fire"""
+    chapters = []
+    # تحويل رابط الرواية إلى رابط قائمة الفصول
+    if not novel_url.endswith('/chapters'):
+        list_url = novel_url.rstrip('/') + '/chapters'
+    else:
+        list_url = novel_url
+
+    try:
+        res = requests.get(list_url, headers=get_headers(), timeout=15)
+        if res.status_code != 200: return []
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        # البحث عن الفصول في قائمة <ul>
+        items = soup.select('ul.chapter-list li')
+        for item in items:
+            a = item.find('a')
+            if a:
+                link = 'https://novelfire.net' + a.get('href') if a.get('href').startswith('/') else a.get('href')
+                raw_title = a.get_text(strip=True)
+                
+                # استخراج الرقم من العنوان أو الرابط
+                num_match = re.search(r'chapter-(\d+)', link)
+                if not num_match: num_match = re.search(r'(\d+)', raw_title)
+                
+                number = int(num_match.group(1)) if num_match else 0
+                clean_title = raw_title.strip()
+                
+                if number > 0:
+                    chapters.append({'number': number, 'url': link, 'title': clean_title})
+        
+        chapters.sort(key=lambda x: x['number'])
+        return chapters
+    except Exception as e:
+        print(f"Error fetching NovelFire chapter list: {e}")
+        return []
+
+def scrape_chapter_novelfire(url):
+    try:
+        res = requests.get(url, headers=get_headers(), timeout=15)
+        if res.status_code != 200: return None
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        # محتوى الفصل في Novel Fire غالباً ما يكون داخل div بـ id "content" أو "chapter-content"
+        container = soup.find('div', id='content') or soup.find('div', class_='chapter-content')
+        
+        if container:
+            # حذف الإعلانات والعناصر غير النصية
+            for bad in container.find_all(['div', 'script', 'style', 'ins', 'button']):
+                if 'ads' in (bad.get('class') or []) or 'nf-ads' in (bad.get('class') or []):
+                    bad.decompose()
+
+            text = container.get_text(separator="\n\n", strip=True)
+            # تنظيف النصوص المتكررة الخاصة بالموقع
+            text = re.sub(r'Read.*online.*now!', '', text)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            return text
+        return None
+    except: return None
+
+def worker_novelfire_list(url, admin_email, metadata):
+    existing_chapters = check_existing_chapters(metadata['title'])
+    skip_meta = len(existing_chapters) > 0
+    
+    if not skip_meta:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+
+    all_chapters = fetch_chapter_list_novelfire(url)
+    if not all_chapters:
+        print(f"No chapters found for {metadata['title']} on NovelFire")
+        return
+
+    batch = []
+    for chap in all_chapters:
+        if chap['number'] in existing_chapters:
+            continue
+            
+        print(f"Scraping NovelFire: {metadata['title']} - Ch {chap['number']}...")
+        content = scrape_chapter_novelfire(chap['url'])
+        
+        if content:
+            batch.append({
+                'number': chap['number'],
+                'title': chap['title'],
+                'content': content
+            })
+            
+            if len(batch) >= 5:
+                send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+                batch = []
+                time.sleep(1)
         
     if batch:
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
@@ -422,7 +536,7 @@ def worker_madara_list(url, admin_email, metadata):
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "ZEUS Scraper Service with Cookie Support is Running", 200
+    return "ZEUS Scraper Service with NovelFire Support is Running", 200
 
 @app.route('/scrape', methods=['POST'])
 def trigger_scrape():
@@ -458,6 +572,14 @@ def trigger_scrape():
         thread.daemon = False
         thread.start()
         return jsonify({'message': 'Scraping started (Markaz Riwayat).'}), 200
+
+    elif 'novelfire.net' in url:
+        meta = fetch_metadata_novelfire(url)
+        if not meta: return jsonify({'message': 'Failed metadata'}), 400
+        thread = threading.Thread(target=worker_novelfire_list, args=(url, admin_email, meta))
+        thread.daemon = False
+        thread.start()
+        return jsonify({'message': 'Scraping started (Novel Fire).'}), 200
 
     else:
         return jsonify({'message': 'Unsupported Domain'}), 400
