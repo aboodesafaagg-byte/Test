@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from bs4 import BeautifulSoup
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 # ==========================================
 # إعدادات التطبيق
@@ -50,8 +50,13 @@ def fix_image_url(url, base_url='https://api.rewayat.club'):
     if url.startswith('//'):
         return 'https:' + url
     elif url.startswith('/'):
+        # Fix for absolute paths without domain
         if 'novelfire.net' in base_url:
             return 'https://novelfire.net' + url
+        elif 'wuxiabox.com' in base_url or 'wuxiaspot.com' in base_url:
+             parsed = urlparse(base_url)
+             domain = f"{parsed.scheme}://{parsed.netloc}"
+             return domain + url
         return base_url + url
     elif not url.startswith('http'):
         return base_url + '/' + url
@@ -538,6 +543,178 @@ def worker_novelfire_list(url, admin_email, metadata):
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
 
 # ==========================================
+# 🔵 4. WuxiaBox / WuxiaSpot Logic
+# ==========================================
+
+def fetch_metadata_wuxiabox(url):
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=15)
+        if response.status_code != 200: return None
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Title
+        title_tag = soup.select_one('h1.novel-title')
+        title = title_tag.get_text(strip=True) if title_tag else "Unknown"
+        
+        # Cover
+        cover = ""
+        img_tag = soup.select_one('figure.cover img')
+        if img_tag:
+            cover = img_tag.get('data-src') or img_tag.get('src')
+        
+        # Domain parsing for base url
+        parsed_uri = urlparse(url)
+        base_url = '{uri.scheme}://{uri.netloc}'.format(uri=parsed_uri)
+        cover = fix_image_url(cover, base_url=base_url)
+
+        # Description
+        desc_div = soup.select_one('.summary .content') or soup.select_one('.description')
+        description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
+
+        # Tags & Category
+        tags = []
+        tags_container = soup.select('.tags a.tag')
+        for t in tags_container:
+            tags.append(t.get_text(strip=True))
+        
+        category = "عام"
+        cat_tag = soup.select_one('.categories a')
+        if cat_tag:
+            category = cat_tag.get_text(strip=True)
+
+        status_tag = soup.select_one('.header-stats strong')
+        status = status_tag.get_text(strip=True) if status_tag else "مستمرة"
+
+        return {
+            'title': title, 'description': description, 'cover': cover,
+            'status': status, 'category': category, 'tags': tags,
+            'base_url': base_url 
+        }
+    except Exception as e:
+        print(f"Error WuxiaBox Meta: {e}")
+        return None
+
+def fetch_chapter_list_wuxiabox(url, metadata):
+    chapters = []
+    base_url = metadata.get('base_url', 'https://wuxiabox.com')
+    
+    try:
+        current_url = url
+        
+        while True:
+            print(f"🔍 Fetching chapters from WuxiaBox: {current_url}")
+            response = requests.get(current_url, headers=get_headers(), timeout=15)
+            if response.status_code != 200: break
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Extract chapters
+            chapter_list = soup.select('ul.chapter-list li a')
+            if not chapter_list:
+                # Sometimes list is dynamic, but usually on these sites it's paginated
+                break
+                
+            for a in chapter_list:
+                href = a.get('href')
+                full_link = urljoin(base_url, href)
+                title = a.get('title') or a.get_text(strip=True)
+                
+                # Extract number
+                # Often format is "Chapter 123 title" or just "Chapter 123"
+                # Using regex to find the first integer in the text
+                num_match = re.search(r'Chapter\s+(\d+)', title, re.IGNORECASE)
+                if not num_match:
+                    num_match = re.search(r'(\d+)', title)
+                
+                if num_match:
+                    number = int(num_match.group(1))
+                    chapters.append({'number': number, 'url': full_link, 'title': title})
+            
+            # Find Next Page
+            # The pagination is usually in ul.pagination
+            next_btn = None
+            pagination_links = soup.select('ul.pagination li a')
+            for link in pagination_links:
+                if '>' in link.get_text() or 'Next' in link.get_text():
+                    next_btn = link
+                    break
+                # Sometimes it is just the last link if not numbered
+                
+            if next_btn:
+                next_href = next_btn.get('href')
+                current_url = urljoin(base_url, next_href)
+                time.sleep(0.5)
+            else:
+                break
+        
+        # Remove duplicates based on number
+        unique_chapters = {c['number']: c for c in chapters}.values()
+        chapters = list(unique_chapters)
+        chapters.sort(key=lambda x: x['number'])
+        
+        return chapters
+
+    except Exception as e:
+        print(f"Error WuxiaBox List: {e}")
+        return []
+
+def scrape_chapter_wuxiabox(url):
+    try:
+        res = requests.get(url, headers=get_headers(), timeout=15)
+        if res.status_code != 200: return None
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        content_div = soup.select_one('.chapter-content')
+        if not content_div: return None
+        
+        # Clean ads
+        for script in content_div.find_all('script'):
+            script.decompose()
+        for div in content_div.find_all('div'):
+            # Usually ads are in divs inside content
+            div.decompose()
+        for style in content_div.find_all('style'):
+            style.decompose()
+            
+        text = content_div.get_text(separator="\n\n", strip=True)
+        # Cleanup
+        text = re.sub(r'\(End of this chapter\)', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        return text
+    except: return None
+
+def worker_wuxiabox_list(url, admin_email, metadata):
+    existing_chapters = check_existing_chapters(metadata['title'])
+    skip_meta = len(existing_chapters) > 0
+    
+    if not skip_meta:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+
+    all_chapters = fetch_chapter_list_wuxiabox(url, metadata)
+    if not all_chapters:
+        print("No chapters found")
+        return
+
+    batch = []
+    for chap in all_chapters:
+        if chap['number'] in existing_chapters:
+            continue
+            
+        print(f"Scraping WuxiaBox: Ch {chap['number']}...")
+        content = scrape_chapter_wuxiabox(chap['url'])
+        
+        if content:
+            batch.append({'number': chap['number'], 'title': chap['title'], 'content': content})
+            if len(batch) >= 5:
+                send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+                batch = []
+                time.sleep(1)
+                
+    if batch:
+        send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': skip_meta})
+
+# ==========================================
 # Main Orchestrator
 # ==========================================
 
@@ -584,6 +761,13 @@ def trigger_scrape():
         thread = threading.Thread(target=worker_novelfire_list, args=(url, admin_email, meta))
         thread.start()
         return jsonify({'message': 'Scraping started (Novel Fire).'}), 200
+
+    elif 'wuxiabox.com' in url or 'wuxiaspot.com' in url:
+        meta = fetch_metadata_wuxiabox(url)
+        if not meta: return jsonify({'message': 'Failed metadata'}), 400
+        thread = threading.Thread(target=worker_wuxiabox_list, args=(url, admin_email, meta))
+        thread.start()
+        return jsonify({'message': 'Scraping started (WuxiaBox/Spot).'}), 200
 
     else:
         return jsonify({'message': 'Unsupported Domain'}), 400
