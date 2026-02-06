@@ -485,34 +485,54 @@ def fetch_metadata_novelfire(url):
         if response.status_code != 200: return None
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        title_tag = soup.find("meta", property="og:title")
-        title = title_tag["content"] if title_tag else soup.find('h1').get_text(strip=True)
+        # Update: Use dedicated classes if possible based on new HTML
+        title_tag = soup.select_one('h1.novel-title')
+        if not title_tag:
+            # Fallback to OG
+            meta_title = soup.find("meta", property="og:title")
+            title = meta_title["content"] if meta_title else "Unknown Title"
+        else:
+            title = title_tag.get_text(strip=True)
+            
         title = title.replace(' - Novel Fire', '').strip()
 
+        # Cover (Updated selector)
         cover = ""
-        og_img = soup.find("meta", property="og:image")
-        if og_img: cover = og_img["content"]
+        img_tag = soup.select_one('figure.cover img')
+        if img_tag:
+            cover = img_tag.get('src')
+        
+        if not cover:
+            og_img = soup.find("meta", property="og:image")
+            if og_img: cover = og_img["content"]
+            
         cover = fix_image_url(cover, base_url='https://novelfire.net')
 
-        desc_div = soup.find('div', class_='description') or soup.find('div', id='novel-summary')
+        # Description (Updated selector for .summary .content)
+        desc_div = soup.select_one('.summary .content')
+        if not desc_div:
+            desc_div = soup.find('div', class_='description') or soup.find('div', id='novel-summary')
+            
         description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
 
         tags = []
-        genre_links = soup.select('.novel-genres a')
+        # Updated genre selector
+        genre_links = soup.select('.categories ul li a')
+        if not genre_links:
+            genre_links = soup.select('.novel-genres a')
+            
         for link in genre_links:
             tags.append(link.get_text(strip=True))
         category = tags[0] if tags else "عام"
 
         # 🔥🔥 STATUS CHECK - NOVEL FIRE SPECIFIC 🔥🔥
-        # Looking for: <strong class="completed">Completed</strong>
         status = "مستمرة"
         completed_tag = soup.find('strong', class_='completed')
         if completed_tag and 'Completed' in completed_tag.get_text(strip=True):
             status = "مكتملة"
 
-        # 🔥 Extract Last Update Time (NovelFire specific)
+        # 🔥 Extract Last Update Time
         last_update = datetime.now().isoformat()
-        # Look for <p class="update"> inside .chapter-latest-container
         update_node = soup.select_one('.chapter-latest-container .update')
         if update_node:
             last_update = parse_relative_date(update_node.get_text(strip=True))
