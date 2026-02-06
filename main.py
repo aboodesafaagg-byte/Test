@@ -128,11 +128,22 @@ def fetch_metadata_rewayat(url):
         desc_div = soup.find(class_='text-pre-line') or soup.find('div', class_='v-card__text')
         description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
         
-        # Check Status
+        # 🔥🔥 STATUS CHECK - REWAYAT CLUB SPECIFIC 🔥🔥
         status = "مستمرة"
-        # Rewayat Club usually puts status in specific badges, need to check if they have 'Completed'
-        # Defaulting to ongoing for now unless specific indicator found
+        # 1. Check for specific status badges in Vuetify chips
+        chips = soup.find_all(class_='v-chip__content')
+        for chip in chips:
+            txt = chip.get_text(strip=True)
+            if "مكتملة" in txt or "Completed" in txt:
+                status = "مكتملة"
+                break
         
+        # 2. Fallback: Search in full text if not found
+        if status == "مستمرة":
+            if "مكتملة" in soup.get_text():
+                # Be careful not to match other things, but usually safe in metadata area
+                status = "مكتملة"
+
         return {
             'title': title, 'description': description, 'cover': cover_url,
             'status': status, 'category': "عام", 'tags': [], 'sourceUrl': url
@@ -165,10 +176,11 @@ def scrape_chapter_rewayat(novel_url, chapter_num):
 
 def worker_rewayat_probe(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
+    # If novel exists, we set skipMetadataUpdate = True, BUT we still send the detected status
     skip_meta = len(existing_chapters) > 0
     
     # Send initial meta update (always send sourceUrl and status)
-    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     current_chapter = 1
     errors = 0
@@ -381,7 +393,7 @@ def worker_madara_list(url, admin_email, metadata):
     skip_meta = len(existing_chapters) > 0
     
     # Always update meta to sync status and URL
-    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     all_chapters = fetch_chapter_list_madara(metadata.get('novel_id'), url)
     
@@ -541,7 +553,7 @@ def worker_novelfire_list(url, admin_email, metadata):
     skip_meta = len(existing_chapters) > 0
     
     # Always update metadata to sync status (Completed) and sourceUrl
-    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     all_chapters = fetch_chapter_list_novelfire(url)
     if not all_chapters:
@@ -714,7 +726,7 @@ def worker_wuxiabox_list(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
     skip_meta = len(existing_chapters) > 0
     
-    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     all_chapters = fetch_chapter_list_wuxiabox(url, metadata)
     if not all_chapters:
@@ -841,7 +853,7 @@ def worker_freewebnovel_list(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
     skip_meta = len(existing_chapters) > 0
     
-    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': False})
+    send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     all_chapters = fetch_chapter_list_freewebnovel(url)
     
@@ -881,7 +893,10 @@ def trigger_scrape():
     
     if not url: return jsonify({'message': 'No URL'}), 400
 
-    # التعديل الهام هنا: التأكد من فحص الرابط بدقة
+    # Ensure URL is clean
+    url = url.strip()
+
+    # Domain check - using 'in' for relaxed matching
     if 'rewayat.club' in url:
         meta = fetch_metadata_rewayat(url)
         if not meta: return jsonify({'message': 'Failed metadata'}), 400
