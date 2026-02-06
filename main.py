@@ -27,7 +27,7 @@ NODE_BACKEND_URL = os.environ.get('NODE_BACKEND_URL', 'https://c-production-3db6
 # ==========================================
 # 🍪 إعدادات الكوكيز (تجاوز حماية تسجيل الدخول)
 # ==========================================
-MARKAZ_COOKIES = 'wordpress_logged_in_198f6e9e82ba200a53325105f201ddc5=53a8cc0077488fb5a321840b4e1f18e7%7C1770510651%7CZmUj9XvN1Cem8SZvUhUfgdlhjnaNrDJEG5fx8iqM53y%7C24bb480a43ebe89e75de989f9afd0f4846079186c93e064185de2a015e37df0f'
+MARKAZ_COOKIES = 'wordpress_logged_in_198f6e9e82ba200a53325105f201ddc5=mikey%7C1771582954%7CgaA8tke59qIp7OnIFDvp4HcagMrNVy6f3es9lfkTWdwd%7Ce72cdec354c9952d38437d5da6aef1563b5f06a0dfaebdeed8b9658614e317c2'
 
 # ==========================================
 # 🔄 GLOBAL SERVER-SIDE SCHEDULER STATE
