@@ -77,23 +77,37 @@ def fix_image_url(url, base_url='https://api.rewayat.club'):
     return url
 
 def parse_relative_date(date_str):
-    """تحويل التواريخ النسبية (منذ 5 ساعات) إلى تاريخ حقيقي"""
+    """تحويل التواريخ النسبية (منذ 5 ساعات، يومين ago) إلى تاريخ حقيقي"""
     try:
-        if not date_str: return None # Return None if invalid to avoid overwriting with NOW
+        if not date_str: return None
         
         now = datetime.now()
         text = str(date_str).lower().strip()
         
-        # إزالة كلمات زائدة
-        text = text.replace('updated', '').replace('ago', '').strip()
+        # معالجة النصوص العربية الخاصة (يومين، ساعتين، إلخ)
+        if 'يومين' in text:
+            return (now - timedelta(days=2)).isoformat()
+        if 'ساعتين' in text:
+            return (now - timedelta(hours=2)).isoformat()
+        if 'دقيقتين' in text:
+            return (now - timedelta(minutes=2)).isoformat()
+        if 'أمس' in text or 'امس' in text:
+            return (now - timedelta(days=1)).isoformat()
         
-        # استخراج الرقم والوحدة
-        match = re.search(r'(\d+)\s*(sec|min|hour|day|week|month|year)', text)
+        # إزالة كلمات زائدة
+        text = text.replace('updated', '').replace('ago', '').replace('منذ', '').strip()
+        
+        # استخراج الرقم والوحدة (عربي وإنجليزي)
+        # Match number followed by optional whitespace and unit
+        match = re.search(r'(\d+)\s*(sec|min|hour|day|week|month|year|ثانية|ثواني|دقيقة|دقائق|ساعة|ساعات|يوم|أيام|ايام|أسبوع|اسبوع|أسابيع|اسابيع|شهر|أشهر|اشهر|سنة|سنوات)', text)
+        
         if match:
             amount = int(match.group(1))
             unit = match.group(2)
             
             delta = timedelta(seconds=0)
+            
+            # English Units
             if 'sec' in unit: delta = timedelta(seconds=amount)
             elif 'min' in unit: delta = timedelta(minutes=amount)
             elif 'hour' in unit: delta = timedelta(hours=amount)
@@ -101,6 +115,15 @@ def parse_relative_date(date_str):
             elif 'week' in unit: delta = timedelta(weeks=amount)
             elif 'month' in unit: delta = timedelta(days=amount * 30)
             elif 'year' in unit: delta = timedelta(days=amount * 365)
+            
+            # Arabic Units
+            elif 'ثان' in unit: delta = timedelta(seconds=amount)
+            elif 'دقيق' in unit: delta = timedelta(minutes=amount)
+            elif 'ساع' in unit: delta = timedelta(hours=amount)
+            elif 'يوم' in unit or 'أيام' in unit or 'ايام' in unit: delta = timedelta(days=amount)
+            elif 'أسبوع' in unit or 'اسبوع' in unit or 'أسابيع' in unit: delta = timedelta(weeks=amount)
+            elif 'شهر' in unit or 'أشهر' in unit: delta = timedelta(days=amount * 30)
+            elif 'سنة' in unit or 'سنوات' in unit: delta = timedelta(days=amount * 365)
             
             return (now - delta).isoformat()
             
@@ -115,7 +138,7 @@ def parse_relative_date(date_str):
         except:
             pass
             
-        return None # Return None if we can't parse it, don't default to NOW
+        return None # Return None if we can't parse it
     except:
         return None
 
@@ -202,20 +225,23 @@ def fetch_metadata_rewayat(url):
 
         # 🔥 EXTRACT REAL LAST UPDATE DATE (NUXT/Vue Logic) 🔥
         last_update = None
-        # Try finding date in list items (usually subtitle)
-        # Look for pattern YYYY/MM/DD or similar in v-list-item__subtitle
+        
+        # Try finding date pattern YYYY/MM/DD in list items text content directly
+        # Example from provided HTML: 2025/12/16 inside v-list-item__subtitle
+        # We look for date patterns anywhere in the HTML body text to be safe or specific elements
+        
+        # Method 1: Regex search in subtitles
         subtitles = soup.find_all(class_='v-list-item__subtitle')
         for sub in subtitles:
             txt = sub.get_text(strip=True)
-            # Match date
+            # Match date YYYY/MM/DD
             date_match = re.search(r'(\d{4}/\d{1,2}/\d{1,2})', txt)
             if date_match:
                 last_update = parse_relative_date(date_match.group(1))
-                break # Found the latest one (usually first)
+                if last_update: break 
         
-        if not last_update:
-             last_update = datetime.now().isoformat() # Fallback only if parse failed
-
+        # Do NOT default to now. If None, it means we couldn't find a new date.
+        
         return {
             'title': title, 'description': description, 'cover': cover_url,
             'status': status, 'category': "عام", 'tags': [], 'sourceUrl': url,
@@ -249,10 +275,9 @@ def scrape_chapter_rewayat(novel_url, chapter_num):
 
 def worker_rewayat_probe(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
-    # If novel exists, we set skipMetadataUpdate = True, BUT we still send the detected status
     skip_meta = len(existing_chapters) > 0
     
-    # Send initial meta update (always send sourceUrl and status)
+    # Send initial meta update
     send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     current_chapter = 1
@@ -291,15 +316,8 @@ def get_base_url(url):
     return f"{parsed.scheme}://{parsed.netloc}"
 
 def clean_madara_title(raw_title):
-    """
-    Cleans titles like:
-    - الفصل 154: أحرف الداو... -> أحرف الداو...
-    - Chapter 154 - The beginning -> The beginning
-    """
-    # Regex to remove "Chapter X :" or "الفصل X -" etc.
-    # Matches start of string, optional words Chapter/الفصل, number, separators
     cleaned = re.sub(r'^\s*(?:Chapter|الفصل|فصل)?\s*\d+\s*[:\-–]\s*', '', raw_title, flags=re.IGNORECASE).strip()
-    return cleaned if cleaned else raw_title # Return original if cleaned is empty
+    return cleaned if cleaned else raw_title 
 
 def fetch_metadata_madara(url):
     try:
@@ -374,15 +392,21 @@ def fetch_metadata_madara(url):
         
         # 🔥 Extract Last Update Time (Madara specific)
         last_update = None
-        # Usually in .post-on or .post-date or .chapter-item .post-on
-        # We try to get the very first occurrence which usually belongs to the latest chapter
-        update_node = soup.select_one('.post-on span') or soup.select_one('.post-on')
-        if update_node:
-            raw_date = update_node.get_text(strip=True)
+        # Look specifically for the "timediff" span used in Markaz Riwayat
+        # HTML: <span class="post-on font-meta"> ... <span class="timediff">يومين ago</span> ... </span>
+        timediff_span = soup.select_one('.post-on .timediff')
+        if timediff_span:
+            raw_date = timediff_span.get_text(strip=True)
             last_update = parse_relative_date(raw_date)
-
+        
         if not last_update:
-            last_update = datetime.now().isoformat()
+            # Fallback to standard post-on
+            update_node = soup.select_one('.post-on span') or soup.select_one('.post-on')
+            if update_node:
+                raw_date = update_node.get_text(strip=True)
+                last_update = parse_relative_date(raw_date)
+
+        # Do NOT default to now. Let backend keep old date if we can't find a new one.
 
         return {
             'title': title, 'description': description, 'cover': cover,
@@ -493,7 +517,6 @@ def worker_madara_list(url, admin_email, metadata):
     existing_chapters = check_existing_chapters(metadata['title'])
     skip_meta = len(existing_chapters) > 0
     
-    # Always update meta to sync status and URL
     send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': [], 'skipMetadataUpdate': skip_meta})
 
     all_chapters = fetch_chapter_list_madara(metadata.get('novel_id'), url)
