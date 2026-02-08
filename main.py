@@ -308,7 +308,7 @@ def worker_rewayat_probe(url, admin_email, metadata):
         send_data_to_backend({'adminEmail': admin_email, 'novelData': metadata, 'chapters': batch, 'skipMetadataUpdate': True})
 
 # ==========================================
-# 🟢 2. Madara Themes (Ar-Novel & Markaz Riwayat)
+# 🟢 2. Madara Themes (Ar-Novel & Markaz Riwayat - Updated for NEW DESIGN)
 # ==========================================
 
 def get_base_url(url):
@@ -327,86 +327,125 @@ def fetch_metadata_madara(url):
         if response.status_code != 200: return None
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        title_tag = soup.find(class_='post-title')
-        title = title_tag.find('h1').get_text(strip=True) if title_tag else "Unknown"
-        title = re.sub(r'\s*~.*$', '', title) 
-
-        cover = ""
-        og_img = soup.find("meta", property="og:image")
-        if og_img: 
-            cover = og_img["content"]
+        # --- Check for NEW Markaz Riwayat Design (Theam App) ---
+        is_new_design = bool(soup.select_one('.manga-title'))
         
-        if not cover:
-            img_container = soup.find(class_='summary_image')
-            if img_container:
-                img_tag = img_container.find('img')
-                if img_tag:
-                    cover = img_tag.get('data-src') or img_tag.get('src') or img_tag.get('srcset', '').split(' ')[0]
-
-        cover = fix_image_url(cover)
-
-        novel_id = None
-        shortlink = soup.find("link", rel="shortlink")
-        if shortlink:
-            match = re.search(r'p=(\d+)', shortlink.get('href', ''))
-            if match: novel_id = match.group(1)
+        if is_new_design:
+            # 1. Title
+            title_tag = soup.select_one('h1.manga-title')
+            title = title_tag.get_text(strip=True) if title_tag else "Unknown"
             
-        if not novel_id:
-            id_input = soup.find('input', class_='rating-post-id')
-            if id_input: novel_id = id_input.get('value')
+            # 2. Cover
+            cover = ""
+            img_tag = soup.select_one('.manga-cover-wrap img')
+            if img_tag:
+                cover = img_tag.get('data-src') or img_tag.get('src')
+            cover = fix_image_url(cover)
             
-        if not novel_id:
-            body_tag = soup.find('body')
-            if body_tag and body_tag.has_attr('class'):
-                body_class = body_tag.get('class', [])
-                for c in body_class:
-                    if c.startswith('manga-id-'):
-                        novel_id = c.replace('manga-id-', '')
+            # 3. Description
+            desc_div = soup.find('div', id='manga-summary')
+            if desc_div:
+                description = desc_div.get_text(separator="\n\n", strip=True)
+            else:
+                description = ""
+            
+            # 4. Status
+            status = "مستمرة"
+            status_pill = soup.select_one('.manga-status-pill')
+            if status_pill:
+                txt = status_pill.get_text(strip=True)
+                if "مكتملة" in txt or "Completed" in txt:
+                    status = "مكتملة"
+            
+            # 5. Categories (Tags)
+            tags = []
+            pill_links = soup.select('.pill-list .pill')
+            for pill in pill_links:
+                tags.append(pill.get_text(strip=True))
+            category = tags[0] if tags else "عام"
+            
+            # 6. Novel ID
+            novel_id = None
+            # Try to get from buttons or data attributes
+            like_btn = soup.select_one('.manga-like-btn')
+            if like_btn and like_btn.has_attr('data-manga-id'):
+                novel_id = like_btn['data-manga-id']
+            if not novel_id:
+                rating_btn = soup.select_one('.manga-stat--rating')
+                if rating_btn and rating_btn.has_attr('data-manga-id'):
+                    novel_id = rating_btn['data-manga-id']
+            
+            # 7. Last Update (from latest chapter in list)
+            last_update = None
+            first_ch_row = soup.select_one('.ch-list .ch-row .ch-date')
+            if first_ch_row:
+                last_update = parse_relative_date(first_ch_row.get_text(strip=True))
+
+        else:
+            # --- OLD Standard Madara Design ---
+            title_tag = soup.find(class_='post-title')
+            title = title_tag.find('h1').get_text(strip=True) if title_tag else "Unknown"
+            title = re.sub(r'\s*~.*$', '', title) 
+
+            cover = ""
+            og_img = soup.find("meta", property="og:image")
+            if og_img: cover = og_img["content"]
+            if not cover:
+                img_container = soup.find(class_='summary_image')
+                if img_container:
+                    img_tag = img_container.find('img')
+                    if img_tag:
+                        cover = img_tag.get('data-src') or img_tag.get('src') or img_tag.get('srcset', '').split(' ')[0]
+            cover = fix_image_url(cover)
+
+            novel_id = None
+            shortlink = soup.find("link", rel="shortlink")
+            if shortlink:
+                match = re.search(r'p=(\d+)', shortlink.get('href', ''))
+                if match: novel_id = match.group(1)
+            if not novel_id:
+                id_input = soup.find('input', class_='rating-post-id')
+                if id_input: novel_id = id_input.get('value')
+            if not novel_id:
+                body_tag = soup.find('body')
+                if body_tag and body_tag.has_attr('class'):
+                    for c in body_tag.get('class', []):
+                        if c.startswith('manga-id-'):
+                            novel_id = c.replace('manga-id-', '')
+
+            desc_div = soup.find(class_='summary__content') or soup.find(class_='description-summary')
+            description = desc_div.get_text(separator="\n\n", strip=True) if desc_div else ""
+            description = re.sub(r'\n{3,}', '\n\n', description)
+
+            genres_content = soup.find(class_='genres-content')
+            category = "عام"
+            tags = []
+            if genres_content:
+                links = genres_content.find_all('a')
+                tags = [a.get_text(strip=True) for a in links]
+                if tags: category = tags[0]
+
+            status = "مستمرة"
+            status_terms = soup.find_all('div', class_='post-status')
+            if status_terms:
+                for st in status_terms:
+                    txt = st.get_text(strip=True).lower()
+                    if 'completed' in txt or 'مكتملة' in txt:
+                        status = "مكتملة"
+                        break
+            
+            last_update = None
+            timediff_span = soup.select_one('.post-on .timediff')
+            if timediff_span:
+                raw_date = timediff_span.get_text(strip=True)
+                last_update = parse_relative_date(raw_date)
+            if not last_update:
+                update_node = soup.select_one('.post-on span') or soup.select_one('.post-on')
+                if update_node:
+                    raw_date = update_node.get_text(strip=True)
+                    last_update = parse_relative_date(raw_date)
 
         print(f"Found Novel ID: {novel_id}")
-
-        desc_div = soup.find(class_='summary__content') or soup.find(class_='description-summary')
-        if desc_div:
-            description = desc_div.get_text(separator="\n\n", strip=True)
-            description = re.sub(r'\n{3,}', '\n\n', description)
-        else:
-            description = ""
-
-        genres_content = soup.find(class_='genres-content')
-        category = "عام"
-        tags = []
-        if genres_content:
-            links = genres_content.find_all('a')
-            tags = [a.get_text(strip=True) for a in links]
-            if tags: category = tags[0]
-
-        # Check Status in Madara
-        status = "مستمرة"
-        status_terms = soup.find_all('div', class_='post-status')
-        if status_terms:
-            for st in status_terms:
-                txt = st.get_text(strip=True).lower()
-                if 'completed' in txt or 'مكتملة' in txt:
-                    status = "مكتملة"
-                    break
-        
-        # 🔥 Extract Last Update Time (Madara specific)
-        last_update = None
-        # Look specifically for the "timediff" span used in Markaz Riwayat
-        # HTML: <span class="post-on font-meta"> ... <span class="timediff">يومين ago</span> ... </span>
-        timediff_span = soup.select_one('.post-on .timediff')
-        if timediff_span:
-            raw_date = timediff_span.get_text(strip=True)
-            last_update = parse_relative_date(raw_date)
-        
-        if not last_update:
-            # Fallback to standard post-on
-            update_node = soup.select_one('.post-on span') or soup.select_one('.post-on')
-            if update_node:
-                raw_date = update_node.get_text(strip=True)
-                last_update = parse_relative_date(raw_date)
-
-        # Do NOT default to now. Let backend keep old date if we can't find a new one.
 
         return {
             'title': title, 'description': description, 'cover': cover,
@@ -423,24 +462,55 @@ def fetch_metadata_markaz(url):
 
 def parse_madara_chapters_from_html(soup):
     chapters = []
-    items = soup.find_all('li', class_='wp-manga-chapter')
     
-    for item in items:
-        a = item.find('a')
-        if a:
+    # 1. Try NEW Design Selector (.ch-list .ch-row)
+    new_rows = soup.select('.ch-list .ch-row')
+    if new_rows:
+        for row in new_rows:
+            # Link is usually the anchor tag wrapping or inside the row
+            a = row.find('a')
+            if not a: continue
+            
             link = a.get('href')
-            raw_title = a.get_text(strip=True)
             
-            # Extract Number
-            num_match = re.search(r'(\d+)', raw_title)
-            number = int(num_match.group(1)) if num_match else 0
+            # Extract Number from .ch-num
+            num_div = row.select_one('.ch-num')
+            number = 0
+            if num_div:
+                try:
+                    number = int(num_div.get_text(strip=True))
+                except: pass
             
-            # 🔥 Clean Title Logic
+            # If number not found in div, try from link or title
+            if number == 0:
+                num_match = re.search(r'(\d+)', link)
+                if num_match: number = int(num_match.group(1))
+
+            # Extract Title from .ch-title
+            title_div = row.select_one('.ch-title')
+            raw_title = title_div.get_text(strip=True) if title_div else f"Chapter {number}"
             clean_title = clean_madara_title(raw_title)
-            
+
             if number > 0:
                 chapters.append({'number': number, 'url': link, 'title': clean_title})
-    
+        
+        return chapters
+
+    # 2. Try OLD Design Selector (li.wp-manga-chapter)
+    items = soup.find_all('li', class_='wp-manga-chapter')
+    if items:
+        for item in items:
+            a = item.find('a')
+            if a:
+                link = a.get('href')
+                raw_title = a.get_text(strip=True)
+                num_match = re.search(r'(\d+)', raw_title)
+                number = int(num_match.group(1)) if num_match else 0
+                clean_title = clean_madara_title(raw_title)
+                if number > 0:
+                    chapters.append({'number': number, 'url': link, 'title': clean_title})
+        return chapters
+
     return chapters
 
 def fetch_chapter_list_madara(novel_id, novel_url):
@@ -448,6 +518,11 @@ def fetch_chapter_list_madara(novel_id, novel_url):
     base_url = get_base_url(novel_url)
     use_cookies = 'markazriwayat.com' in novel_url
     
+    # Try getting chapters from the loaded page HTML first (if provided in variable, but here we fetch fresh)
+    # Some new designs load chapters directly in the HTML without AJAX if they are few, 
+    # but mostly they use AJAX or Load More.
+    
+    # 1. Try Standard Madara AJAX
     if novel_url:
         ajax_endpoint = f"{novel_url.rstrip('/')}/ajax/chapters/"
         try:
@@ -461,6 +536,7 @@ def fetch_chapter_list_madara(novel_id, novel_url):
         except Exception as e:
             print(f"AJAX endpoint failed: {e}")
 
+    # 2. Try Admin AJAX (Fallback)
     if not chapters and novel_id:
         try:
             admin_ajax_url = f"{base_url}/wp-admin/admin-ajax.php"
@@ -472,7 +548,18 @@ def fetch_chapter_list_madara(novel_id, novel_url):
                 print(f"✅ Chapters fetched via admin-ajax ({len(chapters)})")
         except Exception as e:
             print(f"admin-ajax failed: {e}")
-            
+    
+    # 3. Try parsing the novel page directly (If the new design puts chapters in the DOM)
+    if not chapters and novel_url:
+        try:
+            res = requests.get(novel_url, headers=get_headers(use_cookies=use_cookies), timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.content, 'html.parser')
+                chapters = parse_madara_chapters_from_html(soup)
+                print(f"✅ Chapters fetched via direct HTML ({len(chapters)})")
+        except Exception as e:
+            print(f"Direct HTML fetch failed: {e}")
+
     if chapters:
         chapters.sort(key=lambda x: x['number'])
     
@@ -485,6 +572,7 @@ def scrape_chapter_madara(url):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, 'html.parser')
         
+        # Selectors: Old Madara + New Markaz (.reading-content with .text-right)
         container = soup.find(class_='reader-target') or \
                     soup.find(class_='reading-content') or \
                     soup.find(class_='text-left') or \
@@ -492,7 +580,13 @@ def scrape_chapter_madara(url):
                     soup.find(class_='entry-content')
             
         if container:
+            # Check if there is a nested .text-right inside .reading-content (New Design)
+            inner_text_right = container.find(class_='text-right')
+            if inner_text_right:
+                container = inner_text_right
+
             for bad in container.find_all(['div', 'script', 'style', 'input', 'ins', 'iframe', 'button']):
+                # Clean specific classes
                 if bad.get('class') and any(c in ['nav-links', 'code-block', 'adsbygoogle', 'pf-ad', 'wpmcr-under-title-row'] for c in bad.get('class')):
                     bad.decompose()
                 if bad.get('id') == 'reader-btn':
