@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
+
 # ==========================================
 # إعدادات التطبيق
 # ==========================================
